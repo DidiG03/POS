@@ -153,6 +153,8 @@ describe('CIS formatting', () => {
   it('formats price with two decimals', () => {
     expect(formatCisPrice(1600)).toBe('1600.00');
     expect(formatCisPrice(12.5)).toBe('12.50');
+    expect(formatCisPrice(1.005)).toBe('1.01');
+    expect(formatCisPrice(10.075)).toBe('10.08');
   });
 });
 

@@ -9,7 +9,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('@db/client', () => ({ prisma: {} }));
 
-import { withTableLock } from './core';
+import { tableLockKey, withTableLock } from './core';
 
 describe('withTableLock', () => {
   it('serializes concurrent calls for the same (area, label)', async () => {
@@ -86,5 +86,26 @@ describe('withTableLock', () => {
     await expect(waiting).rejects.toMatchObject({ code: 'TABLE_BUSY' });
     releaseHold();
     await expect(hold).resolves.toBe('held');
+  });
+});
+
+describe('tableLockKey', () => {
+  it('keeps names containing a colon apart', () => {
+    expect(tableLockKey('A:B', 'C')).not.toBe(tableLockKey('A', 'B:C'));
+  });
+
+  it('lets two such tables run in parallel instead of queueing', async () => {
+    const events: string[] = [];
+    const a = withTableLock('A:B', 'C', async () => {
+      events.push('A:start');
+      await new Promise((r) => setTimeout(r, 25));
+      events.push('A:end');
+    });
+    const b = withTableLock('A', 'B:C', async () => {
+      events.push('B:start');
+      events.push('B:end');
+    });
+    await Promise.all([a, b]);
+    expect(events.indexOf('B:end')).toBeLessThan(events.indexOf('A:end'));
   });
 });

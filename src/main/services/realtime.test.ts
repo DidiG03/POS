@@ -55,3 +55,31 @@ describe('sse event ids', () => {
     expect(sseCatchupIfMissed(4)).toBe(null);
   });
 });
+
+describe('broadcastNotificationsChanged', () => {
+  it('sends one notifications event for a burst of writes', async () => {
+    vi.useFakeTimers();
+    const { broadcastNotificationsChanged } = await import('./realtime');
+    const writes: string[] = [];
+    const client = { res: { write: (s: string) => writes.push(s) } };
+    (globalThis as any).__SSE_CLIENTS__ = new Set([client]);
+    try {
+      broadcastNotificationsChanged();
+      broadcastNotificationsChanged();
+      broadcastNotificationsChanged();
+      expect(writes).toEqual([]);
+      vi.advanceTimersByTime(300);
+      expect(
+        writes.filter((w) => w.includes('event: notifications')),
+      ).toHaveLength(1);
+      broadcastNotificationsChanged();
+      vi.advanceTimersByTime(300);
+      expect(
+        writes.filter((w) => w.includes('event: notifications')),
+      ).toHaveLength(2);
+    } finally {
+      delete (globalThis as any).__SSE_CLIENTS__;
+      vi.useRealTimers();
+    }
+  });
+});

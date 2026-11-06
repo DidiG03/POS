@@ -24,7 +24,7 @@ describe('compactTicketLogSession', () => {
     const deleted: unknown[] = [];
     const client = {
       ticketLog: {
-        findMany: async () => [{ id: 30 }, { id: 20 }, { id: 10 }],
+        findMany: async () => [{ id: 30 }, { id: 20 }, { id: 10 }, { id: 5 }],
         deleteMany: async (args: unknown) => {
           deleted.push(args);
           return { count: 2 };
@@ -54,6 +54,23 @@ describe('compactTicketLogSession', () => {
     await expect(compactTicketLogSession('A:1@t0', client)).resolves.toBe(0);
   });
 
+  it('does not write when the sitting holds exactly the kept snapshots', async () => {
+    const asked: any[] = [];
+    const client = {
+      ticketLog: {
+        findMany: async (args: any) => {
+          asked.push(args);
+          return [{ id: 30 }, { id: 20 }, { id: 10 }];
+        },
+        deleteMany: async () => {
+          throw new Error('nothing to delete: no write transaction');
+        },
+      },
+    };
+    await expect(compactTicketLogSession('A:1@t0', client)).resolves.toBe(0);
+    expect(asked[0].take).toBe(4);
+  });
+
   it('refuses an area-only leftover key so it cannot wipe the room', async () => {
     const client = {
       ticketLog: {
@@ -77,7 +94,7 @@ describe('compactOversizedTicketLogSessions', () => {
       ticketLog: {
         findMany: async (args: any) => {
           keys.push(String(args.where.sessionKey));
-          return [{ id: 3 }, { id: 2 }, { id: 1 }];
+          return [{ id: 4 }, { id: 3 }, { id: 2 }, { id: 1 }];
         },
         deleteMany: async () => ({ count: 1 }),
       },
@@ -144,7 +161,7 @@ describe('backfillAndCompactTicketLogs', () => {
             return [{ area: 'A', tableLabel: '1' }];
           }
           if (args?.where?.sessionKey) {
-            return [{ id: 4 }, { id: 3 }, { id: 2 }];
+            return [{ id: 4 }, { id: 3 }, { id: 2 }, { id: 1 }];
           }
           return [
             {

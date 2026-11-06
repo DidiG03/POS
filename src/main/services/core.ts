@@ -26,18 +26,27 @@ const tableLocks = new KeyedAsyncMutex();
 /** How long a second waiter will wait for the same table before failing. */
 export const TABLE_LOCK_WAIT_MS = 8_000;
 
+/**
+ * Lock key for one table. A plain `area:label` let area "A:B" + table "C"
+ * share a lock with area "A" + table "B:C". \u001f (the sitting key's
+ * separator too) can't be typed into an area or table name.
+ */
+export function tableLockKey(area: string, label: string): string {
+  return `${area}\u001f${label}`;
+}
+
 export async function withTableLock<T>(
   area: string,
   label: string,
   fn: () => Promise<T>,
   waitMs: number = TABLE_LOCK_WAIT_MS,
 ): Promise<T> {
-  const key = `${area}:${label}`;
+  const key = tableLockKey(area, label);
   try {
     return await tableLocks.runExclusive(key, fn, waitMs);
   } catch (err) {
     if ((err as { code?: string })?.code === 'LOCK_TIMEOUT') {
-      const busy = new Error(`Table ${key} is busy`);
+      const busy = new Error(`Table ${area}:${label} is busy`);
       (busy as { code?: string }).code = 'TABLE_BUSY';
       throw busy;
     }
@@ -59,12 +68,14 @@ export async function withTablesLocked<T>(
   const seen = new Set<string>();
   const ordered = tables
     .filter((t) => {
-      const key = `${t.area}:${t.label}`;
+      const key = tableLockKey(t.area, t.label);
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
     })
-    .sort((a, b) => (`${a.area}:${a.label}` < `${b.area}:${b.label}` ? -1 : 1));
+    .sort((a, b) =>
+      tableLockKey(a.area, a.label) < tableLockKey(b.area, b.label) ? -1 : 1,
+    );
   const run = (i: number): Promise<T> =>
     i >= ordered.length
       ? fn()

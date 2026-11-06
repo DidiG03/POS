@@ -83,21 +83,55 @@ function attachClient(client: any, mode: 'plain' | 'encrypted'): void {
   sqliteConfigured = false;
 }
 
+/**
+ * Told after a write to a model succeeds (for example so live updates can go
+ * out for `Notification` rows without every writer remembering to send one).
+ * Listeners must be cheap and must not throw; inside a transaction they run
+ * before the commit, so treat the call as a hint to re-read soon.
+ */
+export type ModelWriteListener = (model: string, operation: string) => void;
+const modelWriteListeners = new Set<ModelWriteListener>();
+
+export function onModelWrite(listener: ModelWriteListener): () => void {
+  modelWriteListeners.add(listener);
+  return () => {
+    modelWriteListeners.delete(listener);
+  };
+}
+
+/** @internal exported for tests */
+export function notifyModelWrite(model: unknown, operation: unknown): void {
+  if (modelWriteListeners.size === 0) return;
+  const name = String(model || '');
+  if (!name || !isSqliteWriteOperation(operation)) return;
+  for (const listener of modelWriteListeners) {
+    try {
+      listener(name, String(operation));
+    } catch {
+      // a listener must never fail the write
+    }
+  }
+}
+
 function wrapClient(client: any): any {
   const extended =
     typeof client.$extends === 'function'
       ? client.$extends({
           query: {
             async $allOperations({
+              model,
               operation,
               args,
               query,
             }: {
+              model?: unknown;
               operation?: unknown;
               args: unknown;
               query: (a: unknown) => Promise<unknown>;
             }) {
-              return runPrismaOp(operation, args, query);
+              const result = await runPrismaOp(operation, args, query);
+              if (model) notifyModelWrite(model, operation);
+              return result;
             },
           },
         })

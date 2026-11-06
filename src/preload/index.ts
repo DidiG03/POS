@@ -452,6 +452,15 @@ ipcRenderer.on('layout:changed', (_e, payload) => {
   }
 });
 
+// A notification was written: refresh the badge now, not on the next poll.
+ipcRenderer.on('notifications:changed', () => {
+  try {
+    window.dispatchEvent(new CustomEvent('pos:notificationsChanged'));
+  } catch {
+    // ignore
+  }
+});
+
 ipcRenderer.on('tableMerges:changed', (_e, payload) => {
   try {
     window.dispatchEvent(

@@ -53,14 +53,19 @@ export async function compactTicketLogSession(
   const key = String(sessionKey || '').trim();
   if (!sessionKeyIsSafeToCompact(key)) return 0;
   try {
+    // One row past the keep window tells us whether anything is left to
+    // delete. Without it every Send of a sitting at the cap ran a
+    // deleteMany (a write transaction) that removed nothing.
     const newest = await client.ticketLog.findMany({
       where: { sessionKey: key },
       orderBy: { id: 'desc' },
-      take: TICKET_LOG_KEEP_PER_SESSION,
+      take: TICKET_LOG_KEEP_PER_SESSION + 1,
       select: { id: true },
     });
-    if (newest.length < TICKET_LOG_KEEP_PER_SESSION) return 0;
-    const keepIds = newest.map((r) => r.id);
+    if (newest.length <= TICKET_LOG_KEEP_PER_SESSION) return 0;
+    const keepIds = newest
+      .slice(0, TICKET_LOG_KEEP_PER_SESSION)
+      .map((r) => r.id);
     const result = await client.ticketLog.deleteMany({
       where: { sessionKey: key, id: { notIn: keepIds } },
     });

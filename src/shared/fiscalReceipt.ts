@@ -13,6 +13,7 @@
  * to `#/noData` ("Disa informacione mungojnë"). The official QR is
  * `iic` + `tin` (NIPT) + `crtd` (issue time) + `prc` (total).
  */
+import { roundMoney } from './money';
 
 export const CIS_INVOICE_VERIFY_URL =
   'https://efiskalizimi-app.tatime.gov.al/invoice-check/#/verify';
@@ -142,7 +143,8 @@ export function formatCisIssueDate(
 export function formatCisPrice(total: number | null | undefined): string {
   const n = Number(total);
   if (!Number.isFinite(n)) return '';
-  return n.toFixed(2);
+  // toFixed alone turns 1.005 into "1.00" (binary float); round the decimal.
+  return roundMoney(n).toFixed(2);
 }
 
 export function tinFromVerifyUrl(url: string | null | undefined): string {
