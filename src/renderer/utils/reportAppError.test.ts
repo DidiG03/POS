@@ -114,6 +114,17 @@ describe('transient LAN failures', () => {
     expect(isTransientNetworkError(new Error('Table is closed'))).toBe(false);
   });
 
+  it('toasts a till out of reach on the KDS but does not report it (JAVASCRIPT-T)', () => {
+    vi.mocked(captureRendererException).mockClear();
+    expect(isTransientNetworkError(new Error('till_unreachable'))).toBe(true);
+    expect(isTransientNetworkError(new Error('till_timeout'))).toBe(true);
+    expect(
+      reportAppError(new Error('till_unreachable'), { key: 'kds.listTickets' }),
+    ).toBe(true);
+    expect(toast.fromError).toHaveBeenCalledTimes(1);
+    expect(captureRendererException).not.toHaveBeenCalled();
+  });
+
   it('still toasts one when a waiter deliberately tapped the action', () => {
     // The waiter tapped Send and it did not go out — silence would be worse
     // than a toast. Only the *global* handler filters these.

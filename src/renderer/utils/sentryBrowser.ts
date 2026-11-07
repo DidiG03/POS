@@ -110,6 +110,8 @@ export function initRendererSentry(): void {
             /ResizeObserver loop/,
             /^AbortError\b/,
             /The operation was aborted/,
+            /^till_unreachable$/,
+            /^till_timeout$/,
           ],
           initialScope: {
             tags: {

@@ -6,8 +6,9 @@ import { AsyncMutex } from '@shared/asyncMutex';
 import {
   SQLITE_BUSY_TIMEOUT_MS,
   SQLITE_RETRY_DELAYS_MS,
+  isPrismaEngineNotConnected,
   isRetryableSqliteRead,
-  isSqliteBusy,
+  isRetryableSqliteWrite,
   withSqliteRetry,
   withSqliteTransactionOptions,
 } from './sqliteBusy';
@@ -161,6 +162,24 @@ async function applyPragmas(): Promise<void> {
   });
 }
 
+let reconnecting: Promise<void> | null = null;
+
+/** One `$connect` at a time, shared by every query that saw the engine down. */
+async function reconnectEngine(): Promise<void> {
+  const client = raw;
+  if (!client || typeof client.$connect !== 'function') return;
+  if (!reconnecting) {
+    reconnecting = Promise.resolve(client.$connect())
+      .catch((e: unknown) => {
+        console.warn('[sqlite] engine reconnect failed:', e);
+      })
+      .finally(() => {
+        reconnecting = null;
+      });
+  }
+  await reconnecting;
+}
+
 async function runPrismaOp(
   operation: unknown,
   args: unknown,
@@ -177,21 +196,32 @@ async function runPrismaOp(
       sqliteConfigured = false;
     }
   }
-  const run = () => query(args);
+  const run = async () => {
+    try {
+      return await query(args);
+    } catch (err) {
+      // The engine was restarting: connect it before the retry below.
+      if (isPrismaEngineNotConnected(err)) await reconnectEngine();
+      throw err;
+    }
+  };
   if (!isSqliteWriteOperation(operation)) {
     // Raw SQL can hide a write (`INSERT … RETURNING`), so only model reads
-    // retry a dropped engine response.
+    // retry a dropped engine response. An engine that was not connected
+    // never ran the statement, so raw SQL may retry that.
     const rawSql = /queryRaw/i.test(String(operation || ''));
     return withSqliteRetry(
       run,
       SQLITE_RETRY_DELAYS_MS,
-      rawSql ? isSqliteBusy : isRetryableSqliteRead,
+      rawSql ? isRetryableSqliteWrite : isRetryableSqliteRead,
     );
   }
   const depth = writeDepth.getStore() ?? 0;
   if (depth > 0) return run();
   return writeMutex.runExclusive(() =>
-    writeDepth.run(1, () => withSqliteRetry(run)),
+    writeDepth.run(1, () =>
+      withSqliteRetry(run, SQLITE_RETRY_DELAYS_MS, isRetryableSqliteWrite),
+    ),
   );
 }
 

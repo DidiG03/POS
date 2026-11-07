@@ -30,6 +30,10 @@ const TRANSIENT_NETWORK = [
   /\bNetworkError\b/i,
   /\bNetwork request failed\b/i,
   /\bLoad failed\b/i,
+  // The KDS / Admin desktop apps reach the till through the main process
+  // (`companionLanProxy.ts`), which reports these (Sentry JAVASCRIPT-T).
+  /^till_unreachable$/i,
+  /^till_timeout$/i,
 ];
 
 export function isTransientNetworkError(error: unknown): boolean {
@@ -113,7 +117,8 @@ export function reportAppError(
   recent.set(key, now);
   prune(now);
   toast.fromError(error, fallback, { title: opts?.title });
-  if (isExpectedRefusal(error)) return true;
+  // Staff see the toast; a till out of reach is the network, not a bug.
+  if (isExpectedRefusal(error) || isTransientNetworkError(error)) return true;
   captureRendererException(error, {
     toastKey: key,
     ...(opts?.extra || {}),
