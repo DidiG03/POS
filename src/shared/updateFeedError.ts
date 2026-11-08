@@ -25,6 +25,22 @@ export function isOfflineUpdaterError(error: unknown): boolean {
 }
 
 /**
+ * GitHub answered the update check with a server error or "slow down"
+ * (429, 5xx; it sends 529 when overloaded). The release is fine and the
+ * next scheduled check retries, so it is not reported as a crash.
+ */
+export function isUpdateServerBusyError(error: unknown): boolean {
+  const code = Number((error as { statusCode?: unknown } | null)?.statusCode);
+  if (code === 429 || (code >= 500 && code < 600)) return true;
+  return /\bHttpError:\s*(429|5\d\d)\b/i.test(errorText(error));
+}
+
+/** Nothing to fix on this till: offline, or the update server is busy. */
+export function isTransientUpdaterError(error: unknown): boolean {
+  return isOfflineUpdaterError(error) || isUpdateServerBusyError(error);
+}
+
+/**
  * electron-updater hands every Mac download to Squirrel.Mac, which refuses
  * an app without a Developer ID signature. Ad-hoc builds install by swapping
  * the bundle instead, so this is expected there.
@@ -39,6 +55,9 @@ export function userFacingUpdaterError(error: unknown): string {
   if (isMissingUpdateFeedError(error)) return 'No update available';
   if (isOfflineUpdaterError(error)) {
     return 'No internet connection. The till will check again later.';
+  }
+  if (isUpdateServerBusyError(error)) {
+    return 'The update server is busy. The till will check again later.';
   }
   const msg = errorText(error);
   const first = msg.split(/\r?\n/)[0]?.trim() || '';

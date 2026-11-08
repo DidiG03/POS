@@ -2464,6 +2464,17 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         const status = String(
           (parsed.query.status as any) || 'NEW',
         ).toUpperCase();
+        // Only these exist (KdsStationStatus). Anything else, such as the
+        // "IN_PROGRESS" an older KDS build sent, reached Prisma and came back
+        // as a 500 (Sentry JAVASCRIPT-R).
+        if (status !== 'NEW' && status !== 'DONE') {
+          return send(
+            res,
+            400,
+            { error: 'status must be NEW or DONE' },
+            corsOrigin,
+          );
+        }
         const limit = Math.min(
           KDS_LIST_MAX,
           Math.max(1, Number((parsed.query.limit as any) || 100)),

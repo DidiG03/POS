@@ -66,9 +66,30 @@ export function isPrismaEngineEmptyResponse(err: unknown): boolean {
   return /response from the engine was empty/i.test(message);
 }
 
+/**
+ * The Prisma engine was restarting when the query arrived ("Engine is not
+ * yet connected"; seen on an 8 GB Mac till short on memory, Sentry
+ * JAVASCRIPT-S/M). The query never reached SQLite, so a read or a write can
+ * be retried once the engine is connected again.
+ */
+export function isPrismaEngineNotConnected(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const message = String((err as { message?: unknown }).message || '');
+  return /engine is not yet connected/i.test(message);
+}
+
 /** What a read may retry: a busy database or a dropped engine response. */
 export function isRetryableSqliteRead(err: unknown): boolean {
-  return isSqliteBusy(err) || isPrismaEngineEmptyResponse(err);
+  return (
+    isSqliteBusy(err) ||
+    isPrismaEngineEmptyResponse(err) ||
+    isPrismaEngineNotConnected(err)
+  );
+}
+
+/** What a write may retry: a busy database, or an engine not connected yet. */
+export function isRetryableSqliteWrite(err: unknown): boolean {
+  return isSqliteBusy(err) || isPrismaEngineNotConnected(err);
 }
 
 function sleep(ms: number): Promise<void> {

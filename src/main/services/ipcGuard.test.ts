@@ -176,6 +176,21 @@ describe('isExpectedRefusal', () => {
     ).toBe(true);
   });
 
+  it('treats a busy table as expected: the queue retries it (JAVASCRIPT-Q)', async () => {
+    const { withTableLock } = await import('./core');
+    const held = withTableLock(
+      'A',
+      'T2',
+      () => new Promise((r) => setTimeout(r, 60)),
+    );
+    const busy = await withTableLock('A', 'T2', async () => 'x', 5).catch(
+      (e) => e,
+    );
+    await held;
+    expect((busy as any).code).toBe('TABLE_BUSY');
+    expect(isExpectedRefusal(busy)).toBe(true);
+  });
+
   it('still reports genuine failures', () => {
     expect(isExpectedRefusal(new Error('boom'))).toBe(false);
     expect(

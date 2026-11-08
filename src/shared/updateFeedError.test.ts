@@ -3,6 +3,8 @@ import {
   isMacCodeSignatureError,
   isMissingUpdateFeedError,
   isOfflineUpdaterError,
+  isTransientUpdaterError,
+  isUpdateServerBusyError,
   userFacingUpdaterError,
 } from './updateFeedError';
 
@@ -42,5 +44,31 @@ describe('updateFeedError', () => {
     expect(isMacCodeSignatureError(new Error('net::ERR_TIMED_OUT'))).toBe(
       false,
     );
+  });
+
+  it('treats a busy GitHub (429, 5xx) as transient, not a crash (Sentry JAVASCRIPT-V)', () => {
+    const e529 = Object.assign(
+      new Error(
+        'HttpError: 529 \n"method: GET url: https://github.com/DidiG03/POS/releases/latest/download/latest-mac.yml"',
+      ),
+      { statusCode: 529 },
+    );
+    expect(isUpdateServerBusyError(e529)).toBe(true);
+    expect(isTransientUpdaterError(e529)).toBe(true);
+    expect(
+      isUpdateServerBusyError(new Error('HttpError: 503 Service Unavailable')),
+    ).toBe(true);
+    expect(
+      isUpdateServerBusyError(
+        Object.assign(new Error('x'), { statusCode: 429 }),
+      ),
+    ).toBe(true);
+    expect(
+      isUpdateServerBusyError(new Error('HttpError: 404 latest.yml')),
+    ).toBe(false);
+    expect(isUpdateServerBusyError(new Error('sha512 checksum mismatch'))).toBe(
+      false,
+    );
+    expect(userFacingUpdaterError(e529)).toMatch(/busy/);
   });
 });

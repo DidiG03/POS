@@ -5,6 +5,8 @@ import {
   SQLITE_BUSY_TIMEOUT_MS,
   SQLITE_TX_TIMEOUT_MS,
   isPrismaEngineEmptyResponse,
+  isPrismaEngineNotConnected,
+  isRetryableSqliteWrite,
   isRetryableSqliteRead,
   isSqliteBusy,
   withSqliteRetry,
@@ -151,5 +153,36 @@ describe('dropped engine response', () => {
       }, [0]),
     ).rejects.toBe(EMPTY);
     expect(calls).toBe(1);
+  });
+});
+
+describe('engine not yet connected (Sentry JAVASCRIPT-S/M)', () => {
+  const DOWN = new Error(
+    'Invalid `prisma.notification.findMany()` invocation:\n\n\nEngine is not yet connected.\nBacktrace [...]',
+  );
+
+  it('is retryable for reads and writes: the query never ran', () => {
+    expect(isPrismaEngineNotConnected(DOWN)).toBe(true);
+    expect(isRetryableSqliteRead(DOWN)).toBe(true);
+    expect(isRetryableSqliteWrite(DOWN)).toBe(true);
+    expect(isSqliteBusy(DOWN)).toBe(false);
+    expect(isRetryableSqliteWrite(new Error('UNIQUE constraint failed'))).toBe(
+      false,
+    );
+  });
+
+  it('a write retries it once the engine is back', async () => {
+    let calls = 0;
+    const out = await withSqliteRetry(
+      async () => {
+        calls += 1;
+        if (calls === 1) throw DOWN;
+        return 'ok';
+      },
+      [1],
+      isRetryableSqliteWrite,
+    );
+    expect(out).toBe('ok');
+    expect(calls).toBe(2);
   });
 });

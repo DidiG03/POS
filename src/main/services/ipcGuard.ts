@@ -80,6 +80,10 @@ export function decideAccess(
 export function isExpectedRefusal(error: unknown): boolean {
   if (error instanceof IpcAuthorizationError) return true;
   if (error instanceof ZodError) return true;
+  // Another device holds the table for a moment (Send or payment). The
+  // caller's queue retries it; the LAN API already answers it as a 409.
+  // Reported, it flooded Sentry (JAVASCRIPT-Q: 830 events in a minute).
+  if ((error as { code?: unknown } | null)?.code === 'TABLE_BUSY') return true;
   const code = Number((error as { statusCode?: unknown } | null)?.statusCode);
   return Number.isFinite(code) && code >= 400 && code < 500;
 }

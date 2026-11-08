@@ -31,7 +31,7 @@ import { resolveUpdateFeed } from './services/updateFeed';
 import {
   isMacCodeSignatureError,
   isMissingUpdateFeedError,
-  isOfflineUpdaterError,
+  isTransientUpdaterError,
   userFacingUpdaterError,
 } from '@shared/updateFeedError';
 
@@ -169,7 +169,7 @@ function beginDownload(): Promise<UpdateActionResult> {
       return { success: true, downloaded: true };
     } catch (error: any) {
       if (updateDownloaded) return { success: true, downloaded: true };
-      if (!isOfflineUpdaterError(error)) {
+      if (!isTransientUpdaterError(error)) {
         captureException(
           error instanceof Error ? error : new Error(String(error)),
           { context: 'updater:downloadUpdate' },
@@ -323,7 +323,7 @@ async function performCheck(): Promise<UpdateCheckResult> {
         updateInfo: snapshotUpdateInfo(updateInfo),
       };
     }
-    if (!isOfflineUpdaterError(error)) {
+    if (!isTransientUpdaterError(error)) {
       captureException(
         error instanceof Error ? error : new Error(String(error)),
         { context: 'updater:checkForUpdates' },
@@ -573,8 +573,11 @@ export function setupAutoUpdater(options?: AutoUpdaterSetupOptions): void {
         notifyListeners('update-not-available');
         return;
       }
-      if (isOfflineUpdaterError(error)) {
-        console.warn('[AutoUpdater] Offline:', error?.message || error);
+      if (isTransientUpdaterError(error)) {
+        console.warn(
+          '[AutoUpdater] Offline or server busy:',
+          error?.message || error,
+        );
         notifyListeners('error', { message: userFacingUpdaterError(error) });
         return;
       }
