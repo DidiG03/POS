@@ -165,7 +165,12 @@ import {
   fiscalEnabledOf,
 } from './services/fiscalToggleAudit';
 import { waiterFiscalHold, manageWaiterFiscal } from './services/waiterFiscal';
-import { authorizeLanRoute } from './services/lanPolicy';
+import {
+  TILL_ONLY,
+  TILL_ONLY_MESSAGE,
+  authorizeLanRoute,
+  lanRouteNeedsTill,
+} from './services/lanPolicy';
 import {
   authorizeCreateUser,
   isFirstAdminLanBootstrap,
@@ -212,7 +217,7 @@ import {
   listAdminTicketsByUser,
 } from './services/adminTickets';
 import {
-  eraseAllTickets,
+  eraseAllTicketsAfterBackup,
   eraseTicketsConfirmMatches,
 } from './services/eraseTickets';
 import { isThisMachineAddress } from '@shared/localPosHost';
@@ -1964,6 +1969,26 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         pathname,
         createUserCount ?? -1,
       );
+      // Before the session check, so another device learns nothing about
+      // its token from the answer.
+      if (
+        lanRouteNeedsTill(req.method || 'GET', pathname, {
+          userCount: createUserCount,
+        }) &&
+        !isLoopback(String((req.socket as any)?.remoteAddress || ''))
+      ) {
+        logSecurityEvent('lan_till_only_refused', {
+          method: req.method,
+          pathname,
+          remoteIp: String((req.socket as any)?.remoteAddress || ''),
+        });
+        return send(
+          res,
+          403,
+          { ok: false, code: TILL_ONLY, error: TILL_ONLY_MESSAGE },
+          corsOrigin,
+        );
+      }
       let auth: AuthContext = null;
       if (!isPublic) {
         const token = pickBearerToken(req, parsed);
@@ -4918,12 +4943,15 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             corsOrigin,
           );
         }
-        const result = await eraseAllTickets();
-        logSecurityEvent('tickets_erased', {
-          userId: auth?.userId,
-          ticketLogs: result.ticketLogs,
-          orders: result.orders,
-        });
+        const result = await eraseAllTicketsAfterBackup(createDbBackupNow);
+        if (result.ok) {
+          logSecurityEvent('tickets_erased', {
+            userId: auth?.userId,
+            ticketLogs: result.ticketLogs,
+            orders: result.orders,
+            backupFile: result.backupFile,
+          });
+        }
         return send(res, 200, result, corsOrigin);
       }
       if (req.method === 'GET' && pathname === '/admin/ticket-counts') {

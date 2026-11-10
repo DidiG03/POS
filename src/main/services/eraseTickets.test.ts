@@ -13,6 +13,7 @@ import { broadcastTableStatusChanged } from './realtime';
 import {
   ERASE_TICKETS_CONFIRM,
   eraseAllTickets,
+  eraseAllTicketsAfterBackup,
   eraseTicketsConfirmMatches,
 } from './eraseTickets';
 import { LEDGER_ERASED_THROUGH_KEY } from './ledgerErase';
@@ -126,5 +127,43 @@ describe('eraseAllTickets', () => {
     const client = fakeClient(0);
     await eraseAllTickets(client as any);
     expect(client.upserts).toHaveLength(0);
+  });
+});
+
+describe('eraseAllTicketsAfterBackup', () => {
+  it('erases after the backup and reports where it was written', async () => {
+    const client = fakeClient();
+    const order: string[] = [];
+    const result = await eraseAllTicketsAfterBackup(async () => {
+      order.push('backup');
+      expect(client.calls).toEqual([]);
+      return { ok: true, file: '/backups/pos-backup.db' };
+    }, client as any);
+    expect(result.ok).toBe(true);
+    expect((result as any).backupFile).toBe('/backups/pos-backup.db');
+    expect(client.calls).toContain('order');
+  });
+
+  it('erases nothing when the backup fails', async () => {
+    const client = fakeClient();
+    const result = await eraseAllTicketsAfterBackup(
+      async () => ({ ok: false, error: 'disk full' }),
+      client as any,
+    );
+    expect(result).toEqual({
+      ok: false,
+      error: 'backup-failed',
+      detail: 'disk full',
+    });
+    expect(client.calls).toEqual([]);
+  });
+
+  it('erases nothing when the backup throws', async () => {
+    const client = fakeClient();
+    const result = await eraseAllTicketsAfterBackup(async () => {
+      throw new Error('no such directory');
+    }, client as any);
+    expect(result.ok).toBe(false);
+    expect(client.calls).toEqual([]);
   });
 });

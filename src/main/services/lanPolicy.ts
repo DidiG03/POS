@@ -28,7 +28,17 @@ export interface LanRoutePolicy {
   allow: LanAccess;
   /** Why a route is public, when that isn't self-evident. */
   note?: string;
+  /**
+   * Only from the till's own machine, whatever the session. For the few
+   * actions that replace or remove the whole ledger, or the app itself:
+   * someone has to be at the till to do them.
+   */
+  tillOnly?: true;
 }
+
+export const TILL_ONLY = 'TILL_ONLY';
+export const TILL_ONLY_MESSAGE =
+  'This can only be done on the till itself. Open Admin on the till.';
 
 import { KDS_STAFF_ROLES } from './kdsPermissions';
 
@@ -142,7 +152,7 @@ export const LAN_ROUTE_POLICIES: Readonly<Record<string, LanRoutePolicy>> = {
   'GET /admin/updates/status': { allow: ADMIN },
   'POST /admin/updates/check': { allow: ADMIN },
   'POST /admin/updates/download': { allow: ADMIN },
-  'POST /admin/updates/install': { allow: ADMIN },
+  'POST /admin/updates/install': { allow: ADMIN, tillOnly: true },
 
   // -------------------------------------------------------------- settings
   'POST /settings/update': { allow: ADMIN },
@@ -161,13 +171,13 @@ export const LAN_ROUTE_POLICIES: Readonly<Record<string, LanRoutePolicy>> = {
   'GET /network/ips': { allow: ADMIN },
   'GET /backups': { allow: ADMIN },
   'POST /backups/create': { allow: ADMIN },
-  'POST /backups/restore': { allow: ADMIN },
+  'POST /backups/restore': { allow: ADMIN, tillOnly: true },
   'GET /vault/prefs': { allow: ADMIN },
   'POST /vault/prefs': { allow: ADMIN },
   'POST /vault/repair': { allow: ADMIN },
-  'POST /vault/disable': { allow: ADMIN },
+  'POST /vault/disable': { allow: ADMIN, tillOnly: true },
   'POST /vault/enable': { allow: ADMIN },
-  'POST /admin/erase-tickets': { allow: ADMIN },
+  'POST /admin/erase-tickets': { allow: ADMIN, tillOnly: true },
   'POST /admin/correct-sale': { allow: ADMIN },
   'POST /admin/print-fiscal-receipt': { allow: ADMIN },
   'POST /admin/z-report': { allow: ADMIN, note: 'end-of-day Z report' },
@@ -245,6 +255,24 @@ export const LAN_ROUTE_POLICIES: Readonly<Record<string, LanRoutePolicy>> = {
   'POST /tickets/void-item': { allow: POS },
   'POST /tickets/void-ticket': { allow: POS },
 };
+
+/**
+ * True when a request from another device must be refused: a `tillOnly`
+ * route, or creating the first admin on an empty database (which needs no
+ * session, so it is done at the till).
+ */
+export function lanRouteNeedsTill(
+  method: string,
+  pathname: string,
+  opts?: { userCount?: number },
+): boolean {
+  const m = String(method || '').toUpperCase();
+  if (LAN_ROUTE_POLICIES[`${m} ${pathname}`]?.tillOnly) return true;
+  return (
+    typeof opts?.userCount === 'number' &&
+    isFirstAdminLanBootstrap(m, pathname, opts.userCount)
+  );
+}
 
 export type LanVerdict = 'allow' | 'forbidden' | 'unauthenticated' | 'unknown';
 

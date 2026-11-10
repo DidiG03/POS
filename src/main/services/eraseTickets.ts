@@ -125,3 +125,30 @@ export async function eraseAllTickets(
   }
   return result;
 }
+
+export type EraseAfterBackupResult =
+  | (EraseTicketsResult & { backupFile?: string })
+  | { ok: false; error: 'backup-failed'; detail?: string };
+
+/**
+ * `eraseAllTickets`, after a copy of the ledger has been written to the
+ * backups folder. Nothing is erased when that copy cannot be made: the
+ * erase cannot be undone any other way.
+ */
+export async function eraseAllTicketsAfterBackup(
+  backup: () => Promise<{ ok: boolean; file?: string; error?: string }>,
+  client?: EraseClient,
+): Promise<EraseAfterBackupResult> {
+  const saved = await backup().catch((e: unknown) => ({
+    ok: false,
+    file: undefined,
+    error: String((e as { message?: unknown })?.message || e),
+  }));
+  if (!saved.ok) {
+    return { ok: false, error: 'backup-failed', detail: saved.error };
+  }
+  const result = client
+    ? await eraseAllTickets(client)
+    : await eraseAllTickets();
+  return { ...result, backupFile: saved.file };
+}

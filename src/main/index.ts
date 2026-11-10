@@ -242,7 +242,7 @@ import {
   listAdminTicketsByUser,
 } from './services/adminTickets';
 import {
-  eraseAllTickets,
+  eraseAllTicketsAfterBackup,
   eraseTicketsConfirmMatches,
 } from './services/eraseTickets';
 import {
@@ -4465,12 +4465,15 @@ ipcHandle('admin:eraseTickets', async (_e, input, ctx) => {
   if (!eraseTicketsConfirmMatches((input as any)?.confirm)) {
     return { ok: false, error: 'confirm-required' };
   }
-  const result = await eraseAllTickets();
-  logSecurityEvent('tickets_erased', {
-    userId: ctx.session?.userId,
-    ticketLogs: result.ticketLogs,
-    orders: result.orders,
-  });
+  const result = await eraseAllTicketsAfterBackup(createDbBackupNow);
+  if (result.ok) {
+    logSecurityEvent('tickets_erased', {
+      userId: ctx.session?.userId,
+      ticketLogs: result.ticketLogs,
+      orders: result.orders,
+      backupFile: result.backupFile,
+    });
+  }
   return result;
 });
 

@@ -8,7 +8,11 @@
 import { describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
-import { LAN_ROUTE_POLICIES, authorizeLanRoute } from './lanPolicy';
+import {
+  LAN_ROUTE_POLICIES,
+  authorizeLanRoute,
+  lanRouteNeedsTill,
+} from './lanPolicy';
 
 const API_SOURCE = path.resolve(__dirname, '..', 'api.ts');
 const RENDERER_LAN = [
@@ -68,6 +72,42 @@ describe('LAN policy shape', () => {
       if (policy.allow !== 'public') continue;
       if (route === 'GET /offline/status') continue;
       expect(policy.note, route).toBeTruthy();
+    }
+  });
+});
+
+describe('lanRouteNeedsTill', () => {
+  it('keeps ledger- and app-replacing actions on the till', () => {
+    for (const [method, path] of [
+      ['POST', '/backups/restore'],
+      ['POST', '/admin/erase-tickets'],
+      ['POST', '/vault/disable'],
+      ['POST', '/admin/updates/install'],
+    ]) {
+      expect(lanRouteNeedsTill(method, path), path).toBe(true);
+    }
+  });
+
+  it('leaves everyday and read-only admin routes reachable', () => {
+    expect(lanRouteNeedsTill('GET', '/backups')).toBe(false);
+    expect(lanRouteNeedsTill('POST', '/backups/create')).toBe(false);
+    expect(lanRouteNeedsTill('POST', '/admin/updates/download')).toBe(false);
+    expect(lanRouteNeedsTill('POST', '/print/ticket')).toBe(false);
+  });
+
+  it('creates the first admin at the till only', () => {
+    expect(
+      lanRouteNeedsTill('POST', '/auth/create-user', { userCount: 0 }),
+    ).toBe(true);
+    expect(
+      lanRouteNeedsTill('POST', '/auth/create-user', { userCount: 3 }),
+    ).toBe(false);
+    expect(lanRouteNeedsTill('POST', '/auth/create-user')).toBe(false);
+  });
+
+  it('only marks admin routes', () => {
+    for (const [route, policy] of Object.entries(LAN_ROUTE_POLICIES)) {
+      if (policy.tillOnly) expect(policy.allow, route).toEqual(['ADMIN']);
     }
   });
 });
