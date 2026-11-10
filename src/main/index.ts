@@ -139,7 +139,9 @@ import {
   validatePinUpdate,
   sanitizeNumber,
   getSecurityLog,
+  setSecurityEventSink,
 } from './services/security';
+import { createSecurityEventStore } from './services/securityEventStore';
 import { normalizePin } from '@shared/staffPin';
 import { IpcAuthorizationError, ipcHandle } from './services/ipcGuard';
 import { authorizeCreateUser } from './services/createUserAuth';
@@ -1416,6 +1418,7 @@ async function startHostDatabaseAndServicesOp(): Promise<void> {
     startFiscalDeferLoop();
     // Notifications: automatically delete notifications older than 1 week (DB retention).
     startNotificationRetentionLoop(prisma, { days: 7 });
+    startSecurityEventRetention();
     startKdsRetentionLoop(prisma, { intervalMs: 60 * 1000 });
     // PrintJob: SENT/FAILED slips older than a week. After sales-ledger
     // backfill so a PAYMENT receipt without an Order is not deleted.
@@ -1544,6 +1547,7 @@ app.on('before-quit', (event) => {
   // Always synchronously cancel timers/listeners that don't need to await anything.
   cleanupUpdater();
   stopNotificationRetentionLoop();
+  stopSecurityEventRetention();
   stopPrintJobRetentionLoop();
   stopKdsAutoBumpLoop();
   stopAutoVoidStaleTicketsLoop();
@@ -1667,6 +1671,34 @@ ipcHandle('updater:installUpdate', async () => {
 });
 
 // Global error handlers for uncaught exceptions
+// Security events are saved to the ledger, not only kept in memory.
+const securityEvents = createSecurityEventStore({
+  db: () => prisma,
+  ready: () => !isSqliteLocked(),
+  onError: (e) => console.warn('[security] event not saved yet:', e),
+});
+setSecurityEventSink((event, details) => {
+  void securityEvents.record(event, details);
+});
+
+let securityEventRetentionTimer: NodeJS.Timeout | null = null;
+
+function startSecurityEventRetention(): void {
+  if (securityEventRetentionTimer) return;
+  const run = () => {
+    void securityEvents.prune().catch(() => undefined);
+  };
+  run();
+  securityEventRetentionTimer = setInterval(run, 24 * 60 * 60 * 1000);
+  securityEventRetentionTimer.unref?.();
+}
+
+function stopSecurityEventRetention(): void {
+  if (!securityEventRetentionTimer) return;
+  clearInterval(securityEventRetentionTimer);
+  securityEventRetentionTimer = null;
+}
+
 process.on('uncaughtException', (error) => {
   console.error('Uncaught Exception:', error);
   captureException(error, { type: 'uncaughtException' });
@@ -4583,7 +4615,15 @@ ipcHandle('admin:getSalesTrends', async (_e, input) => {
 // Security log (admin only)
 ipcHandle('admin:getSecurityLog', async (_e, input) => {
   const limit = sanitizeNumber(input?.limit, 1, 1000, 100);
-  return getSecurityLog(limit);
+  // The saved log, newest first. The in-memory list only if it cannot be
+  // read (ledger locked, table missing on a database mid-upgrade).
+  try {
+    await securityEvents.flush();
+    return await securityEvents.list(limit);
+  } catch (e) {
+    console.warn('[security] saved log unavailable:', e);
+    return getSecurityLog(limit).reverse();
+  }
 });
 
 // =====================================================================

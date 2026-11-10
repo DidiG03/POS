@@ -120,7 +120,19 @@ export function cleanupSenderRateLimits(senderId: number): void {
   ipcRateLimits.delete(senderId);
 }
 
-// Security audit log (in-memory, last 1000 events)
+/**
+ * Where events are kept for good. The till sets this at startup
+ * (`securityEventStore.ts`); without one (KDS and Admin apps, tests) the
+ * events stay in the in-memory list below.
+ */
+export type SecurityEventSink = (event: string, details: unknown) => void;
+let securityEventSink: SecurityEventSink | null = null;
+
+export function setSecurityEventSink(sink: SecurityEventSink | null): void {
+  securityEventSink = sink;
+}
+
+// Recent events in memory (last 1000), also the fallback when no sink is set.
 const securityLog: Array<{
   timestamp: number;
   event: string;
@@ -142,6 +154,14 @@ export function logSecurityEvent(event: string, details: any): void {
   // Keep only last MAX_LOG_SIZE entries
   if (securityLog.length > MAX_LOG_SIZE) {
     securityLog.shift();
+  }
+
+  if (securityEventSink) {
+    try {
+      securityEventSink(event, details);
+    } catch {
+      // recording an event must never fail the caller
+    }
   }
 
   // Also log to console in development

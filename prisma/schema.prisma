@@ -549,6 +549,17 @@ model Notification {
   @@index([createdAt])
 }
 
+/// Security events: failed sign-ins, refused requests, ledger erasure.
+/// Written by `securityEventStore.ts`, never edited, pruned by age.
+model SecurityEvent {
+  id          Int      @id @default(autoincrement())
+  event       String
+  detailsJson Json?
+  createdAt   DateTime @default(now())
+
+  @@index([createdAt])
+}
+
 enum ReservationStatus {
   BOOKED
   SEATED
