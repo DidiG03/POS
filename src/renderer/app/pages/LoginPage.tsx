@@ -15,6 +15,7 @@ import { isClockOnlyRole } from '@shared/utils/roles';
 import { isClockCaptureEnabled } from '@shared/clockCapture';
 import { clockCaptureFromChange } from '@shared/settingsChange';
 import { isCommonAdminPin, sanitizePinInput } from '@shared/staffPin';
+import { isTillOnly } from '@shared/tillOnly';
 import { BrandMark } from '../../components/BrandMark';
 import { SpinnerGlyph } from '../../components/SpinnerGlyph';
 import { resolveBackendHost } from '../../utils/backendHost';
@@ -729,7 +730,9 @@ export default function LoginPage() {
                     setReloadNonce((n) => n + 1);
                   } catch (e: any) {
                     showLoginMessage(
-                      e?.message || t('login.firstAdminCreateFailed'),
+                      isTillOnly(e)
+                        ? t('login.firstAdminOnTill')
+                        : e?.message || t('login.firstAdminCreateFailed'),
                     );
                   } finally {
                     setCreatingFirstAdmin(false);

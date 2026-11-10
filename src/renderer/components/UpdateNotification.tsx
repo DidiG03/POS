@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import type { UpdateStatusDTO } from '@shared/ipc';
+import i18n from '../i18n/config';
 import { SpinnerGlyph } from './SpinnerGlyph';
 import {
   downloadFleetUpdates,
@@ -156,7 +157,8 @@ export function UpdateNotification() {
     try {
       if (isAdminCompanion()) {
         const result = await installFleetUpdates();
-        if (result.error) setError(result.error);
+        if (result.tillOnly) setError(i18n.t('settingsUpdates.installOnTill'));
+        else if (result.error) setError(result.error);
         return;
       }
       // A refusal (no download, this Mac user cannot replace the app) comes

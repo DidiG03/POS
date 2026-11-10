@@ -52,6 +52,7 @@ import { useAdminSessionStore } from '../../stores/adminSession';
 import { useLicenseCapabilities } from '../../stores/licenseCapabilities';
 import { applyPosUiTheme } from '../../theme';
 import { normalizePosUiTheme, type PosUiTheme } from '@shared/uiTheme';
+import { isTillOnly } from '@shared/tillOnly';
 import {
   checkFleetUpdates,
   downloadFleetUpdates,
@@ -393,7 +394,8 @@ function SystemUpdatesSettings() {
     if (!confirm(t('settingsUpdates.installConfirm'))) return;
     try {
       const r = await installFleetUpdates();
-      if (r?.error) setError(String(r.error));
+      if (r?.tillOnly) setError(t('settingsUpdates.installOnTill'));
+      else if (r?.error) setError(String(r.error));
     } catch (e: any) {
       setError(String(e?.message || t('settingsUpdates.errorInstall')));
     }
@@ -2431,7 +2433,9 @@ function DiskProtectionSettings() {
       setLedgerAction(null);
       await reload();
     } catch (e: any) {
-      const msg = String(e?.message || e || '');
+      const msg = isTillOnly(e)
+        ? t('common.tillOnly')
+        : String(e?.message || e || '');
       setLedgerResult({
         tone: 'error',
         lines: [t('settingsVault.actionFailed'), msg].filter(Boolean),
@@ -2448,13 +2452,24 @@ function DiskProtectionSettings() {
     try {
       const r = await window.api.admin.eraseTickets({ confirm: erasePhrase });
       if (!r?.ok) {
-        setStatus(t('settingsVault.eraseFailed'), 'error');
+        setStatus(
+          r?.error === 'backup-failed'
+            ? t('settingsVault.eraseBackupFailed')
+            : t('settingsVault.eraseFailed'),
+          'error',
+        );
         return;
       }
       setEraseOpen(false);
       setEraseTyped('');
       setStatus(t('settingsVault.erased'));
-    } catch {
+    } catch (e) {
+      if (isTillOnly(e)) {
+        setEraseOpen(false);
+        setEraseTyped('');
+        setStatus(t('common.tillOnly'), 'error');
+        return;
+      }
       setStatus(t('settingsVault.eraseFailed'), 'error');
     } finally {
       setBusy(false);
@@ -2740,7 +2755,12 @@ function BackupsSettings() {
         setStatus(t('settingsBackups.restoring'));
       }
     } catch (e: any) {
-      setStatus(e?.message || t('settingsBackups.restoreFailed'), 'error');
+      setStatus(
+        isTillOnly(e)
+          ? t('common.tillOnly')
+          : e?.message || t('settingsBackups.restoreFailed'),
+        'error',
+      );
     } finally {
       setBusy(null);
     }

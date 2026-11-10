@@ -71,7 +71,9 @@ async function runAdminFleetMenuCheck(): Promise<void> {
         await showBox({
           type: 'error',
           message: 'Could not install the update',
-          detail: installed.error,
+          detail: installed.tillOnly
+            ? 'The till has an update ready. Install it on the till itself first, then install here.'
+            : installed.error,
         });
       }
     }

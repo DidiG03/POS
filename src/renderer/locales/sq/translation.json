@@ -76,6 +76,7 @@
     "toastInfo": "Njoftim",
     "toastWarning": "Kontrollo këtë",
     "toastError": "Diçka shkoi keq",
+    "tillOnly": "Kjo mund të bëhet vetëm në vetë arkën. Hap Admin në kompjuterin e arkës dhe bëje aty.",
     "notificationsStale": "Jashtë linje: numri i fundit i njohur",
     "toastDetails": "Detajet",
     "actionFailed": "Nuk u krye. Provo sërish.",
@@ -360,6 +361,7 @@
     "firstAdminCreating": "Duke krijuar…",
     "firstAdminCreated": "Admini u krijua. Zgjidhe më poshtë dhe shkruaj PIN-in.",
     "firstAdminCreateFailed": "Krijimi i adminit dështoi",
+    "firstAdminOnTill": "Krijo administratorin e parë në vetë arkën. Pas kësaj mund të hysh nga kjo pajisje.",
     "admins": "Administratorët",
     "notClockedIn": "Nuk je në turn",
     "clockedIn": "Në turn",
@@ -599,8 +601,9 @@
   },
   "settingsUpdates": {
     "title": "Përditësimet e sistemit",
-    "help": "Një veprim përditëson këtë Admin, POS-in e lidhur (edhe nëse është në një kompjuter tjetër) dhe ekranet e kuzhinës në të njëjtin rrjet — vetëm aty ku ka version të ri.",
-    "helpStore": "Një veprim përditëson këtë Admin, POS-in e lidhur (edhe nëse është në një kompjuter tjetër) dhe ekranet e kuzhinës në të njëjtin rrjet — vetëm aty ku ka version të ri.",
+    "help": "Një veprim përditëson këtë Admin, POS-in e lidhur dhe ekranet e kuzhinës në të njëjtin rrjet — vetëm aty ku ka version të ri. Një arkë në kompjuter tjetër e shkarkon përditësimin nga këtu dhe e instalon në vetë arkën.",
+    "helpStore": "Një veprim përditëson këtë Admin, POS-in e lidhur dhe ekranet e kuzhinës në të njëjtin rrjet — vetëm aty ku ka version të ri. Një arkë në kompjuter tjetër e shkarkon përditësimin nga këtu dhe e instalon në vetë arkën.",
+    "installOnTill": "Arka ka një përditësim gati. Instaloje fillimisht në vetë arkën, pastaj instaloje këtu.",
     "checking": "Duke kontrolluar…",
     "refresh": "Rifresko",
     "available": "Ka përditësim",
@@ -704,6 +707,7 @@
     "eraseConfirmAction": "Fshi faturat",
     "erased": "Të gjitha faturat u fshinë.",
     "eraseFailed": "Faturat nuk u fshinë.",
+    "eraseBackupFailed": "Kopja rezervë nuk u ruajt, prandaj asgjë nuk u fshi.",
     "eraseLocked": "Hape arkën fillimisht në kompjuterin e restorantit."
   },
   "settingsAbout": {

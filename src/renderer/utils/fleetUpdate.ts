@@ -1,4 +1,5 @@
 import type { UpdateStatusDTO } from '@shared/ipc';
+import { TILL_ONLY_MESSAGE, isTillOnly } from '@shared/tillOnly';
 import {
   isMissingUpdateFeedError,
   userFacingUpdaterError,
@@ -261,14 +262,30 @@ export async function prepareFleetUpdates(): Promise<{
   return { error, admin, pos };
 }
 
-/** Push KDS + POS first, then restart this Admin app if it has a download. */
-export async function installFleetUpdates(): Promise<{ error?: string }> {
+/**
+ * Push KDS + POS first, then restart this Admin app if it has a download.
+ *
+ * A till on another computer installs its own update (`tillOnly.ts`).
+ * While it still has one waiting, this Admin is left as it is, so the two
+ * do not end up on different versions; `tillOnly` tells the caller to say
+ * so. Once the till is up to date, the same action updates this Admin.
+ */
+export async function installFleetUpdates(): Promise<{
+  error?: string;
+  tillOnly?: boolean;
+}> {
   const local = localUpdater();
   const host = hostUpdates();
   try {
     await host?.install?.();
-  } catch {
-    // POS may quit before the HTTP response returns.
+  } catch (e) {
+    if (isTillOnly(e)) {
+      const pos = await host?.getStatus?.().catch(() => null);
+      if (!pos || pos.hasUpdate || pos.downloaded) {
+        return { error: TILL_ONLY_MESSAGE, tillOnly: true };
+      }
+    }
+    // Otherwise: POS may quit before the HTTP response returns.
   }
   await delay(400);
   const admin = await local?.getUpdateStatus?.().catch(() => null);

@@ -1,5 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
+import { TILL_ONLY } from '@shared/tillOnly';
 import {
+  installFleetUpdates,
   isStatusBusy,
   summarizeFleetStatus,
   waitWhileBusy,
@@ -67,5 +69,59 @@ describe('summarizeFleetStatus', () => {
     expect(summary.readyToInstall).toBe(true);
     expect(summary.title).toMatch(/ready to install/i);
     expect(summary.detail).toMatch(/0\.2\.41/);
+  });
+});
+
+describe('installFleetUpdates', () => {
+  afterEach(() => {
+    delete (globalThis as any).window;
+  });
+
+  function setApi(opts: { posPending: boolean; refuse: boolean }) {
+    const calls: string[] = [];
+    (globalThis as any).window = {
+      api: {
+        hostUpdates: {
+          install: async () => {
+            calls.push('pos');
+            if (opts.refuse) {
+              throw Object.assign(new Error('till only'), { code: TILL_ONLY });
+            }
+            return { success: true };
+          },
+          getStatus: async () =>
+            status({ hasUpdate: opts.posPending, downloaded: opts.posPending }),
+        },
+        updater: {
+          getUpdateStatus: async () => status({ downloaded: true }),
+          installUpdate: async () => {
+            calls.push('admin');
+            return { success: true };
+          },
+        },
+      },
+    };
+    return calls;
+  }
+
+  it('leaves Admin alone while a remote till still has its update waiting', async () => {
+    const calls = setApi({ posPending: true, refuse: true });
+    const r = await installFleetUpdates();
+    expect(r.tillOnly).toBe(true);
+    expect(calls).toEqual(['pos']);
+  });
+
+  it('updates Admin once the remote till is up to date', async () => {
+    const calls = setApi({ posPending: false, refuse: true });
+    const r = await installFleetUpdates();
+    expect(r).toEqual({});
+    expect(calls).toEqual(['pos', 'admin']);
+  });
+
+  it('installs both when the till accepts', async () => {
+    const calls = setApi({ posPending: true, refuse: false });
+    const r = await installFleetUpdates();
+    expect(r).toEqual({});
+    expect(calls).toEqual(['pos', 'admin']);
   });
 });

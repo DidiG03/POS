@@ -36,9 +36,7 @@ export interface LanRoutePolicy {
   tillOnly?: true;
 }
 
-export const TILL_ONLY = 'TILL_ONLY';
-export const TILL_ONLY_MESSAGE =
-  'This can only be done on the till itself. Open Admin on the till.';
+export { TILL_ONLY, TILL_ONLY_MESSAGE } from '@shared/tillOnly';
 
 import { KDS_STAFF_ROLES } from './kdsPermissions';
 
