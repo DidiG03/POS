@@ -119,7 +119,6 @@ export const IPC_POLICIES: Readonly<Record<string, IpcPolicy>> = {
     allow: 'public',
     rateLimit: { maxAttempts: 20, windowMs: 60 * 1000 },
   },
-  'auth:syncStaffFromApi': { allow: ADMIN },
   'auth:updateUser': { allow: ADMIN, rateLimit: { maxAttempts: 20 } },
   'auth:verifyManagerPin': {
     allow: 'session',

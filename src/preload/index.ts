@@ -21,8 +21,6 @@ const api: Api = {
     listUsers: (input?: { includeAdmins?: boolean }) =>
       ipcRenderer.invoke('auth:listUsers', input || {}),
     updateUser: (input) => ipcRenderer.invoke('auth:updateUser', input),
-    syncStaffFromApi: (url?: string) =>
-      ipcRenderer.invoke('auth:syncStaffFromApi', { url }),
     deleteUser: (input) => ipcRenderer.invoke('auth:deleteUser', input),
   },
   settings: {

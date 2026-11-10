@@ -89,7 +89,6 @@ describe('IPC policy shape', () => {
   it('gates every destructive back-office channel on ADMIN', () => {
     const mustBeAdmin = [
       'auth:deleteUser',
-      'auth:syncStaffFromApi',
       'auth:updateUser',
       'admin:eraseTickets',
       'backups:create',

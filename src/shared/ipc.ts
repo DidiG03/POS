@@ -616,7 +616,6 @@ export interface ApiAuth {
    */
   pairDevice?(pairingCode: string): Promise<boolean>;
   updateUser(input: UpdateUserInput): Promise<UserDTO>;
-  syncStaffFromApi(url?: string): Promise<number>;
   deleteUser(input: DeleteUserInput): Promise<boolean>;
 }
 

@@ -1271,9 +1271,6 @@ export function installBrowserLanApi(): void {
           body: JSON.stringify(input ?? {}),
         });
       },
-      async syncStaffFromApi() {
-        throw new Error('not supported in browser');
-      },
       async deleteUser(input: any) {
         return await goLan('/auth/delete-user', {
           method: 'POST',
