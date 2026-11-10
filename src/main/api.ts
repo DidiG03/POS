@@ -236,6 +236,10 @@ import {
 } from './services/security';
 import { normalizePin } from '@shared/staffPin';
 import { allowLanCorsOrigin, isTrustedLanClient } from './services/lanCors';
+import {
+  lanHostHeaderAllowed,
+  parseAllowedHostsEnv,
+} from './services/lanHostHeader';
 import { planTicketVoid } from '@shared/voidPaid';
 import { applySaleCorrection } from './services/saleCorrection';
 import {
@@ -1194,6 +1198,10 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
   const bindHost = process.env.POS_BIND_HOST || '0.0.0.0';
   const secret = await getOrCreateApiSecret();
   const cors = createCorsPolicy();
+  const allowedHosts = {
+    ownHostnames: [os.hostname()],
+    extra: parseAllowedHostsEnv(process.env.POS_ALLOWED_HOSTS),
+  };
 
   function getContentType(pathname: string) {
     if (pathname.endsWith('.html')) return 'text/html; charset=utf-8';
@@ -1226,6 +1234,17 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         origin,
         typeof req.headers.host === 'string' ? req.headers.host : undefined,
       );
+
+      // Before anything else, the preflight included: a page that reached
+      // this port under its own domain name gets no answer it can use.
+      if (!lanHostHeaderAllowed(req.headers.host, allowedHosts)) {
+        logSecurityEvent('lan_host_refused', {
+          host: String(req.headers.host || '').slice(0, 120),
+          remoteIp: String((req.socket as any)?.remoteAddress || ''),
+          pathname,
+        });
+        return send(res, 421, { error: 'unknown host' }, null);
+      }
 
       if (req.method === 'OPTIONS') {
         // Only respond with CORS headers when origin is allowed.
@@ -1666,16 +1685,18 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         }
       }
       if (req.method === 'POST' && pathname === '/auth/login') {
-        // Failed logins from the network are throttled (see
-        // `lanLoginThrottle`): a short delay per miss, then a lockout per IP
-        // and per admin account. Admin logins skip the pairing code, so
-        // without this the admin PIN was the only barrier and it could be
-        // walked in minutes. The till itself (loopback) is never throttled.
+        // Failed logins over HTTP are throttled (see `lanLoginThrottle`): a
+        // short delay per miss, then a lockout per IP and per account.
+        // Admin logins skip the pairing code, so without this the admin PIN
+        // was the only barrier and it could be walked in minutes. This
+        // machine is throttled like any other: the till's own screen signs
+        // in over IPC (with its own throttle), so nothing at the counter
+        // depends on unlimited HTTP attempts.
         const body = await parseJson(req);
         const { pin, userId, pairingCode } = body || {};
         const remoteIp = String((req.socket as any)?.remoteAddress || '');
         const loopback = isLoopback(remoteIp);
-        if (!loopback) {
+        {
           const lockedFor = lanLoginIpLockedFor(remoteIp);
           if (lockedFor > 0) {
             // Refused unchecked, but still an attempt: keep it in the log.
@@ -1723,15 +1744,12 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         const where: any = { id: loginId, active: true };
         const user = await prisma.user.findFirst({ where });
         if (!user) {
-          let attemptsLeft: number | undefined;
-          if (!loopback) {
-            const attempt = beginLanLoginAttempt(remoteIp, 0);
-            if (!attempt.ok)
-              return sendLoginLocked(res, attempt.lockedForMs, corsOrigin);
-            const outcome = attempt.fail();
-            attemptsLeft = outcome.attemptsLeft;
-            await failLanLogin(remoteIp, outcome, { reason: 'user' });
-          }
+          const attempt = beginLanLoginAttempt(remoteIp, 0);
+          if (!attempt.ok)
+            return sendLoginLocked(res, attempt.lockedForMs, corsOrigin);
+          const outcome = attempt.fail();
+          const attemptsLeft = outcome.attemptsLeft;
+          await failLanLogin(remoteIp, outcome, { reason: 'user' });
           // Same answer as a wrong PIN: an unknown account is not revealed.
           return sendWrongPin(res, { attemptsLeft }, corsOrigin);
         }
@@ -1770,10 +1788,8 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         }
         // Reserved before the (slow) PIN check, so parallel guesses cannot
         // all pass the lock check before the first miss is counted.
-        const attempt = loopback
-          ? null
-          : beginLanLoginAttempt(remoteIp, user.id);
-        if (attempt && !attempt.ok) {
+        const attempt = beginLanLoginAttempt(remoteIp, user.id);
+        if (!attempt.ok) {
           logSecurityEvent('lan_login_while_locked', {
             remoteIp,
             userId: Number(user.id),
