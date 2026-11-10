@@ -232,6 +232,7 @@
     "keyInvalid": "Ky çelës nuk është aktiv.",
     "payFailed": "Nuk u hap pagesa.",
     "payOpened": "Stripe u hap në shfletues. Përfundo pagesën atje, pastaj kthehu në këtë kasa.",
+    "payUpdateEmailed": "Pagesa e fundit nuk u krye. Dërguam një lidhje te {{email}} për të përditësuar kartën e abonimit ekzistues. Nuk do të faturohesh dy herë.",
     "payUpdateOpened": "Stripe u hap që të përditësosh kartën e abonimit ekzistues. Nuk do të faturohesh dy herë.",
     "errorTitle": "Nuk mund të vazhdohet",
     "fixFields": "Kontrollo fushat e theksuara.",

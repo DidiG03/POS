@@ -13,7 +13,10 @@ import {
   parseLicenseKey,
   type LicenseEdition,
 } from './licenseKey.js';
-import { sendLicenseKeyEmail } from './sendLicenseEmail.js';
+import {
+  sendBillingPortalEmail,
+  sendLicenseKeyEmail,
+} from './sendLicenseEmail.js';
 import {
   allowRateLimit,
   canIssueLicense,
@@ -349,16 +352,29 @@ app.post('/checkout/create', async (req, res) => {
         });
       }
       if (info && shouldUpdatePaymentInsteadOfCheckout(info.status)) {
+        // The portal link goes to the address Stripe holds for the
+        // customer, like the license key above.
         const url = await portalUrlForCustomer(existing.id);
         if (!url) {
           return res.status(500).json({
             error: 'Could not open billing. Try Already a customer.',
           });
         }
+        try {
+          await sendBillingPortalEmail({ to: info.email, url });
+        } catch (e) {
+          console.error('billing portal email', e);
+          return res.status(500).json({
+            error: 'Could not email the payment link. Try again.',
+          });
+        }
         return res.status(200).json({
           needsPaymentUpdate: true,
           alreadyLicensed: false,
-          url,
+          emailed: true,
+          // Shown as-is by apps released before the link was emailed.
+          error:
+            'Your last payment did not go through. We emailed you a link to update your card.',
         });
       }
     }

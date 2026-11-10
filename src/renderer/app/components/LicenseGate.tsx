@@ -348,6 +348,14 @@ export default function LicenseGate({
         businessName: draft.businessName.trim(),
         edition: draft.edition,
       });
+      // Before `error`: the billing server also words this one for apps
+      // that only know to show an error.
+      if (r?.needsPaymentUpdate && r?.emailed) {
+        toast.success(
+          t('license.payUpdateEmailed', { email: draft.email.trim() }),
+        );
+        return;
+      }
       if (r?.error) {
         fail(String(r.error));
         return;

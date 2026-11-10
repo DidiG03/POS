@@ -2632,6 +2632,9 @@ ipcHandle('license:createCheckout', async (_e, input) => {
     businessName: String((input as any)?.businessName || '').trim(),
     edition: String((input as any)?.edition || '').trim(),
   });
+  if (r.needsPaymentUpdate && r.emailed) {
+    return { needsPaymentUpdate: true, emailed: true };
+  }
   if (r.error) return r;
   const url = await openStripeHostedUrl(r.url);
   if (r.url && !url) {

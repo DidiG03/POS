@@ -232,6 +232,7 @@
     "keyInvalid": "That key is not active.",
     "payFailed": "Could not start checkout.",
     "payOpened": "Stripe opened in your browser. Finish payment there, then return to this till.",
+    "payUpdateEmailed": "Your last payment did not go through. We emailed a link to {{email}} to update the card on your existing subscription. You will not be charged twice.",
     "payUpdateOpened": "Stripe opened so you can update the card on your existing subscription. You will not be charged twice.",
     "errorTitle": "Could not continue",
     "fixFields": "Check the highlighted fields.",
