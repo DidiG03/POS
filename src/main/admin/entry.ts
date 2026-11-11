@@ -28,7 +28,10 @@ import {
   updaterHandlers,
 } from '../updater';
 import { setupAppMenu, finishMenuCheck } from '../services/appMenu';
-import { registerCompanionLanIpc } from '../services/companionLanProxy';
+import {
+  forgetCompanionTills,
+  registerCompanionLanIpc,
+} from '../services/companionLanProxy';
 import { installWindowGuards } from '../services/windowGuards';
 
 app.setName('OneTap Admin');
@@ -252,6 +255,8 @@ ipcMain.handle('adminApp:saveConfig', async (_e, payload) => {
 
 ipcMain.handle('adminApp:resetConfig', () => {
   clearConfig();
+  // The next till is trusted afresh (`pinnedTillClient.ts`).
+  forgetCompanionTills();
   if (mainWindow && !mainWindow.isDestroyed())
     loadHash(mainWindow, '/admin-setup', { bustCache: true });
   return true;
@@ -302,6 +307,7 @@ registerCompanionLanIpc({
   sseEventChannel: 'adminApp:lanSse',
   sseStatusChannel: 'adminApp:lanSseStatus',
   client: 'admin',
+  pinFile: join(app.getPath('userData'), 'till-pins.json'),
 });
 
 app.whenReady().then(() => {

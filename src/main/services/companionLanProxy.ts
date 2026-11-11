@@ -7,8 +7,56 @@
  */
 import type { IpcMain, WebContents } from 'electron';
 import os from 'node:os';
-import { buildLanHttpUrl } from '@shared/lanHost';
-import { httpHostForLocalPos } from '@shared/localPosHost';
+import {
+  httpHostForLocalPos,
+  isThisMachineAddress,
+} from '@shared/localPosHost';
+import {
+  TILL_IDENTITY_CHANGED,
+  createPinnedTillClient,
+  fileTillPinStore,
+  memoryTillPinStore,
+  type PinnedTillClient,
+  type TillRequest,
+} from './pinnedTillClient';
+
+// Requests to the till go over HTTPS whenever the till offers it
+// (`pinnedTillClient.ts`). Until the app names its data folder the
+// remembered tills live in memory only.
+let tillClient: PinnedTillClient = createPinnedTillClient({
+  store: memoryTillPinStore(),
+});
+
+/** Remember tills in `file` (the app's own data folder). */
+export function rememberCompanionTillsIn(file: string): void {
+  tillClient = createPinnedTillClient({ store: fileTillPinStore(file) });
+}
+
+/** "Reset connection": the next till is trusted afresh. */
+export function forgetCompanionTills(): void {
+  tillClient.forgetAll();
+}
+
+function tillRequestFor(input: {
+  host: string;
+  httpPort: number;
+  path: string;
+}): Pick<
+  TillRequest,
+  'host' | 'connectHost' | 'httpPort' | 'path' | 'thisMachine'
+> {
+  const path = assertCompanionLanPath(input.path);
+  const host = String(input.host || '').trim();
+  if (!host) throw new Error('Host is required');
+  const locals = companionLocalAddresses();
+  return {
+    host,
+    connectHost: httpHostForLocalPos(host, locals),
+    httpPort: Number(input.httpPort) || 3333,
+    path,
+    thisMachine: isThisMachineAddress(host, locals),
+  };
+}
 
 const FORWARD_HEADERS = new Set([
   'content-type',
@@ -114,6 +162,19 @@ export function companionLanFailure(err: unknown): CompanionLanFetchResult {
   };
   const name = String(e?.name || '');
   const code = String(e?.cause?.code || e?.code || '');
+  if (code === TILL_IDENTITY_CHANGED) {
+    // Not "unreachable": something else answered at the till's address.
+    return {
+      status: 503,
+      ok: false,
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        error: String(e?.message || 'till identity changed'),
+        code: TILL_IDENTITY_CHANGED,
+        permanent: true,
+      }),
+    };
+  }
   const aborted =
     name === 'AbortError' || code === 'ABORT_ERR' || code === 'UND_ERR_ABORTED';
   return {
@@ -131,33 +192,27 @@ export function companionLanFailure(err: unknown): CompanionLanFetchResult {
 export async function fetchCompanionLan(
   input: CompanionLanFetchInput,
 ): Promise<CompanionLanFetchResult> {
-  const path = assertCompanionLanPath(input.path);
-  const hostRaw = String(input.host || '').trim();
-  if (!hostRaw) throw new Error('Host is required');
-  const host = httpHostForLocalPos(hostRaw, companionLocalAddresses());
-  const url = buildLanHttpUrl(host, Number(input.httpPort) || 3333, path);
+  const target = tillRequestFor(input);
   const method = String(input.method || 'GET').toUpperCase();
   const headers = pickForwardHeaders(input.headers, input.client);
   const timeoutMs = Math.max(1_000, Number(input.timeoutMs) || 8_000);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(url, {
+    const response = await tillClient.request({
+      ...target,
       method,
       headers,
       body: method === 'GET' || method === 'HEAD' ? undefined : input.body,
       signal: controller.signal,
     });
-    const body = await response.text();
-    const outHeaders: Record<string, string> = {};
-    response.headers.forEach((value, key) => {
-      outHeaders[key] = value;
-    });
+    const chunks: Buffer[] = [];
+    for await (const chunk of response.stream) chunks.push(Buffer.from(chunk));
     return {
       status: response.status,
-      ok: response.ok,
-      headers: outHeaders,
-      body,
+      ok: response.status >= 200 && response.status < 300,
+      headers: response.headers,
+      body: Buffer.concat(chunks).toString('utf8'),
     };
   } catch (err) {
     return companionLanFailure(err);
@@ -193,12 +248,8 @@ export function startCompanionLanSse(opts: {
   sseAbort = ac;
   void (async () => {
     try {
-      const path = assertCompanionLanPath(opts.path);
-      const hostRaw = String(opts.host || '').trim();
-      if (!hostRaw) throw new Error('Host is required');
-      const host = httpHostForLocalPos(hostRaw, companionLocalAddresses());
-      const url = buildLanHttpUrl(host, Number(opts.httpPort) || 3333, path);
-      const response = await fetch(url, {
+      const response = await tillClient.request({
+        ...tillRequestFor(opts),
         method: 'GET',
         headers: {
           ...pickForwardHeaders(opts.headers, opts.client),
@@ -206,19 +257,18 @@ export function startCompanionLanSse(opts: {
         },
         signal: ac.signal,
       });
-      if (!response.ok || !response.body) {
+      if (response.status < 200 || response.status >= 300) {
+        response.stream.resume();
         opts.onError(`HTTP ${response.status}`);
         opts.onClose();
         return;
       }
       opts.onOpen();
-      const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buf = '';
-      while (!ac.signal.aborted) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
+      for await (const chunk of response.stream) {
+        if (ac.signal.aborted) break;
+        buf += decoder.decode(chunk, { stream: true });
         const consumed = consumeSseBuffer(buf);
         buf = consumed.rest;
         for (const event of consumed.events) {
@@ -253,7 +303,10 @@ export function registerCompanionLanIpc(opts: {
   sseEventChannel: string;
   sseStatusChannel: string;
   client: 'admin' | 'kds';
+  /** Where remembered tills are kept (`pinnedTillClient.ts`). */
+  pinFile?: string;
 }): void {
+  if (opts.pinFile) rememberCompanionTillsIn(opts.pinFile);
   opts.ipcMain.handle(opts.fetchChannel, async (_event, payload) => {
     try {
       return await fetchCompanionLan({

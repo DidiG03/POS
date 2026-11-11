@@ -36,7 +36,10 @@ import {
   readKdsDeviceTokenFile,
   writeKdsDeviceTokenFile,
 } from './deviceTokenFile';
-import { registerCompanionLanIpc } from '../services/companionLanProxy';
+import {
+  forgetCompanionTills,
+  registerCompanionLanIpc,
+} from '../services/companionLanProxy';
 import { installWindowGuards } from '../services/windowGuards';
 
 app.setName('OneTap KDS');
@@ -370,6 +373,8 @@ ipcMain.handle('kdsApp:saveDisplayCooker', async (_e, payload) => {
 
 ipcMain.handle('kdsApp:resetConfig', () => {
   clearConfig();
+  // The next till is trusted afresh (`pinnedTillClient.ts`).
+  forgetCompanionTills();
   // A new host means a new pairing.
   writeKdsDeviceTokenFile(null, deviceTokenPath());
   if (mainWindow && !mainWindow.isDestroyed())
@@ -425,6 +430,7 @@ registerCompanionLanIpc({
   sseEventChannel: 'kdsApp:lanSse',
   sseStatusChannel: 'kdsApp:lanSseStatus',
   client: 'kds',
+  pinFile: join(app.getPath('userData'), 'till-pins.json'),
 });
 
 // --- Lifecycle ---------------------------------------------------------------
