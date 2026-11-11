@@ -95,3 +95,16 @@ describe('tokenAllowedInQuery', () => {
     expect(tokenAllowedInQuery(null)).toBe(false);
   });
 });
+
+describe('webAppServedTo', () => {
+  it('serves the web app to the till itself only', async () => {
+    const { webAppServedTo } = await import('./lanRequestGuards');
+    expect(webAppServedTo({ packaged: true, thisMachine: true })).toBe(true);
+    expect(webAppServedTo({ packaged: true, thisMachine: false })).toBe(false);
+  });
+
+  it("still serves a developer's unpackaged run to a tablet", async () => {
+    const { webAppServedTo } = await import('./lanRequestGuards');
+    expect(webAppServedTo({ packaged: false, thisMachine: false })).toBe(true);
+  });
+});

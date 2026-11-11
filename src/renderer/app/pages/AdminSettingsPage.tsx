@@ -4480,13 +4480,11 @@ function LanSettings() {
   const lan = (key: string) =>
     t(hasTables ? `adminLan.${key}` : `adminLan.${key}Store`);
   const [loading, setLoading] = useState(true);
-  const [allowLan, setAllowLan] = useState(false);
   const [requirePairingCode, setRequirePairingCode] = useState(true);
   const [pairingCode, setPairingCode] = useState<string>('');
   const [openAtLogin, setOpenAtLogin] = useState(true);
   const [ips, setIps] = useState<string[]>([]);
   const draftRef = useRef({
-    allowLan: false,
     requirePairingCode: true,
     pairingCode: '',
     openAtLogin: true,
@@ -4503,7 +4501,6 @@ function LanSettings() {
           window.api.network.getIps().catch(() => [] as string[]),
         ]);
         const next = {
-          allowLan: Boolean((s as any)?.security?.allowLan),
           requirePairingCode: Boolean(
             (s as any)?.security?.requirePairingCode ?? true,
           ),
@@ -4512,7 +4509,6 @@ function LanSettings() {
         };
         draftRef.current = next;
         lanLoadedRef.current = true;
-        setAllowLan(next.allowLan);
         setRequirePairingCode(next.requirePairingCode);
         setPairingCode(next.pairingCode);
         setOpenAtLogin(next.openAtLogin);
@@ -4548,25 +4544,10 @@ function LanSettings() {
   }
 
   const primaryIp = pickBestLanIp(ips);
-  const LAN_HTTP = '3333';
-  const LAN_HTTPS = '3443';
-  // Hash routing: put setup params in ? before # so the shell reads them on first paint.
-  const staffSetupUrl = primaryIp
-    ? (() => {
-        const q = new URLSearchParams({
-          backend: primaryIp,
-          http: LAN_HTTP,
-          https: LAN_HTTPS,
-        });
-        if (requirePairingCode && pairingCode && /^\d{6}$/.test(pairingCode)) {
-          q.set('pairing', pairingCode);
-        }
-        return `http://${primaryIp}:${LAN_HTTP}/renderer/?${q.toString()}#/`;
-      })()
-    : '';
+  // What staff type into the OneTap app when Scan does not find the till.
+  const tillAddress = primaryIp ? `${primaryIp}:3333` : '';
 
   async function persist(patch: {
-    allowLan?: boolean;
     requirePairingCode?: boolean;
     pairingCode?: string;
     openAtLogin?: boolean;
@@ -4577,7 +4558,6 @@ function LanSettings() {
     }
     const next = { ...draftRef.current, ...patch };
     draftRef.current = next;
-    if (patch.allowLan != null) setAllowLan(next.allowLan);
     if (patch.requirePairingCode != null)
       setRequirePairingCode(next.requirePairingCode);
     if (patch.pairingCode != null) setPairingCode(next.pairingCode);
@@ -4585,7 +4565,6 @@ function LanSettings() {
     try {
       const updated = await window.api.settings.update({
         security: {
-          allowLan: next.allowLan,
           requirePairingCode: next.requirePairingCode,
           ...(patch.pairingCode != null
             ? { pairingCode: next.pairingCode }
@@ -4594,7 +4573,6 @@ function LanSettings() {
         host: { openAtLogin: next.openAtLogin },
       } as any);
       const saved = {
-        allowLan: Boolean((updated as any)?.security?.allowLan),
         requirePairingCode: Boolean(
           (updated as any)?.security?.requirePairingCode ?? true,
         ),
@@ -4604,7 +4582,6 @@ function LanSettings() {
         openAtLogin: (updated as any)?.host?.openAtLogin !== false,
       };
       draftRef.current = saved;
-      setAllowLan(saved.allowLan);
       setRequirePairingCode(saved.requirePairingCode);
       setPairingCode(saved.pairingCode);
       setOpenAtLogin(saved.openAtLogin);
@@ -4614,9 +4591,9 @@ function LanSettings() {
   }
 
   async function copySetupUrl() {
-    if (!staffSetupUrl) return;
+    if (!tillAddress) return;
     try {
-      await navigator.clipboard.writeText(staffSetupUrl);
+      await navigator.clipboard.writeText(tillAddress);
       toast.success(t('adminLan.copied'));
     } catch {
       toast.error(t('adminLan.copyFailed'));
@@ -4641,13 +4618,6 @@ function LanSettings() {
                 label={t('adminLan.openAtLogin')}
               />
               <SettingsToggleRow
-                title={t('adminLan.allowBrowser')}
-                description={lan('allowBrowserHelp')}
-                checked={allowLan}
-                onChange={(next) => void persist({ allowLan: next })}
-                label={t('adminLan.allowBrowser')}
-              />
-              <SettingsToggleRow
                 title={t('adminLan.requirePairing')}
                 description={t('adminLan.requirePairingHelp')}
                 checked={requirePairingCode}
@@ -4656,14 +4626,6 @@ function LanSettings() {
               />
             </div>
           </SettingsCard>
-
-          {!allowLan && (
-            <SettingsCard>
-              <div className="text-[12px] text-gray-400">
-                {lan('browserDisabled')}
-              </div>
-            </SettingsCard>
-          )}
 
           <SettingsCard
             title={t('adminLan.pairingCode')}
@@ -4690,15 +4652,13 @@ function LanSettings() {
 
           <SettingsCard
             title={t('adminLan.setupLink')}
-            description={
-              staffSetupUrl ? lan('setupHint') : t('adminLan.noWifi')
-            }
+            description={tillAddress ? lan('setupHint') : t('adminLan.noWifi')}
           >
-            {staffSetupUrl ? (
+            {tillAddress ? (
               <div className="flex items-center gap-2">
                 <Input
                   className="min-w-0 flex-1 text-[12px]"
-                  value={staffSetupUrl}
+                  value={tillAddress}
                   readOnly
                 />
                 <IconButton

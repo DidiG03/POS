@@ -90,3 +90,18 @@ export function tokenAllowedInQuery(
 ): boolean {
   return pathname === '/events';
 }
+
+/**
+ * Whether the till hands out its web app (the page and its assets).
+ *
+ * Only to this machine. Phones, tablets and kitchen screens use the OneTap
+ * apps, which carry their own copy and can pin the till's certificate; a
+ * browser cannot. A developer's unpackaged run still serves it, so a tablet
+ * on the desk can load the dev build.
+ */
+export function webAppServedTo(input: {
+  packaged: boolean;
+  thisMachine: boolean;
+}): boolean {
+  return input.thisMachine || !input.packaged;
+}

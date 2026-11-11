@@ -17,6 +17,7 @@ import {
   isJsonContentType,
   isWriteMethod,
   parseOptionalIsoDate,
+  webAppServedTo,
 } from './services/lanRequestGuards';
 import bcrypt from 'bcryptjs';
 import {
@@ -337,6 +338,29 @@ import { isTwoStageKitchen } from '@shared/kdsCooker';
 async function getCookerEnabledFromSettings(): Promise<boolean> {
   return true;
 }
+
+/** Shown to a browser that opens the till's address. No script, no links. */
+const BROWSER_ACCESS_REMOVED_HTML = `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OneTap POS</title>
+    <style>
+      body { font-family: system-ui, sans-serif; background: #0b1220; color: #e5e7eb; margin: 0; padding: 24px; }
+      .card { max-width: 560px; margin: 10vh auto 0; background: #111827; border: 1px solid #374151; border-radius: 12px; padding: 20px; }
+      h1 { font-size: 20px; margin: 0 0 12px; }
+      p { line-height: 1.5; margin: 0 0 10px; }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h1>OneTap POS</h1>
+      <p>This till is used through the OneTap apps, not a web browser. Install the OneTap app on this device and connect it to the till from there.</p>
+      <p>Kjo arkë përdoret me aplikacionet OneTap, jo me shfletues. Instalo aplikacionin OneTap në këtë pajisje dhe lidhe me arkën prej aty.</p>
+    </div>
+  </body>
+</html>`;
 
 type CorsPolicy = {
   allowOrigin: (
@@ -1202,6 +1226,28 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           pathname === '/index.html' ||
           pathname.startsWith('/assets/') ||
           pathname.startsWith('/favicon'));
+
+      // The web app is no longer served to other devices: phones, tablets
+      // and kitchen screens use the OneTap apps, which carry their own
+      // copy and can pin the till's certificate (a browser cannot). This
+      // machine still gets it, and so does a developer's unpackaged run.
+      if (
+        req.method === 'GET' &&
+        isStaticGet &&
+        !webAppServedTo({
+          packaged: app.isPackaged,
+          thisMachine: isLoopback(
+            String((req.socket as any)?.remoteAddress || ''),
+          ),
+        })
+      ) {
+        setSecurityHeaders(res, null);
+        res.setHeader('Content-Type', 'text/html; charset=utf-8');
+        res.setHeader('Cache-Control', 'no-store');
+        res.writeHead(410);
+        res.end(BROWSER_ACCESS_REMOVED_HTML);
+        return;
+      }
 
       // Static site (serve built renderer or proxy to remote origin)
       if (req.method === 'GET' && isStaticGet) {
