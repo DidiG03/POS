@@ -142,6 +142,7 @@ import {
   setSecurityEventSink,
 } from './services/security';
 import { createSecurityEventStore } from './services/securityEventStore';
+import { activeLanTls } from './services/lanTls';
 import {
   VOID_ITEM_PREFIX,
   VOID_TICKET_PREFIX,
@@ -1252,9 +1253,11 @@ async function ensureLanApiStarted(): Promise<void> {
       const hostSettings = await coreServices
         .readSettings()
         .catch(() => ({}) as any);
+      const lanTls = activeLanTls();
       void startMdnsAdvertiser({
         httpPort: 3333,
-        httpsPort: 3443,
+        httpsPort: lanTls?.port,
+        tlsPin: lanTls?.pin,
         appVersion: app.getVersion(),
         restaurantName: String(
           (hostSettings as any)?.restaurantName || '',

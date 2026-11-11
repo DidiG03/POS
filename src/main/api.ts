@@ -243,6 +243,11 @@ import {
 import { normalizePin } from '@shared/staffPin';
 import { allowLanCorsOrigin, isTrustedLanClient } from './services/lanCors';
 import {
+  activeLanTls,
+  ensureTlsMaterial,
+  setActiveLanTls,
+} from './services/lanTls';
+import {
   lanHostHeaderAllowed,
   parseAllowedHostsEnv,
 } from './services/lanHostHeader';
@@ -1034,22 +1039,6 @@ export function tlsCertDir(): string {
   }
 }
 
-/**
- * Load the LAN HTTPS key pair, or `null` when none is installed.
- * A missing certificate is a normal, supported configuration.
- */
-export function readTlsMaterial(): { key: Buffer; cert: Buffer } | null {
-  const dir = tlsCertDir();
-  try {
-    const keyPath = join(dir, 'key.pem');
-    const certPath = join(dir, 'cert.pem');
-    if (!fs.existsSync(keyPath) || !fs.existsSync(certPath)) return null;
-    return { key: fs.readFileSync(keyPath), cert: fs.readFileSync(certPath) };
-  } catch {
-    return null;
-  }
-}
-
 export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
   // Phones refresh their notification badge on this event instead of
   // polling every 20 s (any writer of a Notification row triggers it).
@@ -1480,6 +1469,13 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             t: Date.now(),
             appVersion: app.getVersion(),
             minAppVersion: MIN_WAITER_APP_VERSION,
+            // Where HTTPS is served and the pin to remember (`lanTls.ts`).
+            ...(activeLanTls()
+              ? {
+                  httpsPort: activeLanTls()!.port,
+                  tlsPin: activeLanTls()!.pin,
+                }
+              : {}),
           },
           corsOrigin,
         );
@@ -5337,34 +5333,57 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
     }
   });
 
+  // HTTPS with the till's own certificate (`lanTls.ts`): made on first
+  // start, so no operator has to install one. Plain HTTP above keeps
+  // answering until every device has moved over.
   let httpsServer: https.Server | null = null;
+  setActiveLanTls(null);
   try {
-    const tls = readTlsMaterial();
-    if (!tls) {
-      // Not an error: the LAN API is reachable over plain HTTP and that
-      // is what the tablets use by default. HTTPS is opt-in and needs a
-      // certificate the operator supplies.
+    const tls = await ensureTlsMaterial(tlsCertDir(), {
+      dns: [os.hostname(), `${os.hostname()}.local`],
+      ips: listLanIpv4Addresses().filter((ip) => !ip.startsWith('169.254.')),
+    });
+    if (tls.source !== 'existing') {
       console.log(
-        `HTTPS API disabled (no certificate). Drop key.pem/cert.pem in ${tlsCertDir()} to enable it.`,
+        `[tls] ${tls.source === 'created' ? 'Created' : 'Renewed'} the till certificate (valid until ${tls.notAfter.toISOString().slice(0, 10)}).`,
       );
-      throw new Error('no tls material');
+    } else if (tls.notAfter.getTime() < Date.now()) {
+      console.warn(
+        `[tls] The certificate installed in ${tlsCertDir()} expired on ${tls.notAfter.toISOString().slice(0, 10)}; it is still used because the till did not create it.`,
+      );
     }
-    httpsServer = https.createServer({ key: tls.key, cert: tls.cert }, handler);
-    httpsServer.on('error', (err: any) => {
-      const code = String(err?.code || '');
-      if (code === 'EADDRINUSE') {
-        console.warn(
-          `HTTPS API port already in use: https://${bindHost}:${httpsPort} (another POS instance may be running).`,
-        );
-        return;
-      }
-      console.error('HTTPS API server error', err);
+    const serving = https.createServer(
+      { key: tls.key, cert: tls.cert, minVersion: 'TLSv1.2' },
+      handler,
+    );
+    httpsServer = serving;
+    // Wait until it is listening (or has failed to), so discovery
+    // started after this call already knows the HTTPS port and pin.
+    await new Promise<void>((resolve) => {
+      serving.on('error', (err: any) => {
+        setActiveLanTls(null);
+        const code = String(err?.code || '');
+        if (code === 'EADDRINUSE') {
+          console.warn(
+            `HTTPS API port already in use: https://${bindHost}:${httpsPort} (another POS instance may be running).`,
+          );
+        } else {
+          console.error('HTTPS API server error', err);
+        }
+        resolve();
+      });
+      serving.listen(httpsPort, bindHost, () => {
+        // Only now: a client is told about HTTPS once it is really there.
+        setActiveLanTls({ port: httpsPort, pin: tls.pin });
+        console.log(`HTTPS API listening on https://${bindHost}:${httpsPort}`);
+        resolve();
+      });
     });
-    httpsServer.listen(httpsPort, bindHost, () => {
-      console.log(`HTTPS API listening on https://${bindHost}:${httpsPort}`);
+  } catch (e) {
+    console.error('[tls] HTTPS API not started:', e);
+    captureException(e instanceof Error ? e : new Error(String(e)), {
+      context: 'lanTls',
     });
-  } catch {
-    // no TLS certs, skip HTTPS
   }
 
   return { http: server, https: httpsServer };

@@ -24,6 +24,7 @@ let started = false;
 export type AdvertiseInput = {
   httpPort: number;
   httpsPort?: number;
+  tlsPin?: string;
   appVersion?: string;
   businessCode?: string;
   restaurantName?: string;
@@ -73,6 +74,8 @@ export async function startMdnsAdvertiser(
       txt: {
         version: String(input.appVersion || '0'),
         https: String(input.httpsPort || ''),
+        // The pin of the till's HTTPS certificate (`lanTls.ts`).
+        tlsPin: String(input.tlsPin || ''),
         businessCode: String(input.businessCode || ''),
         restaurantName: String(input.restaurantName || ''),
         lanHost,
