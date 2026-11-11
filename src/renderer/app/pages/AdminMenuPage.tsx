@@ -978,9 +978,9 @@ function MenuImportModal({
     setFileName(file.name);
     setParsing(true);
     try {
-      const XLSX = await import('xlsx');
+      const { readSpreadsheet } = await import('../../utils/spreadsheet');
       const buf = await file.arrayBuffer();
-      const parsed = parseMenuWorkbook(XLSX, buf);
+      const parsed = parseMenuWorkbook(await readSpreadsheet(buf));
       setRows(parsed.rows);
       setWarnings(parsed.warnings);
       if (!parsed.rows.length && !parsed.warnings.length) {
@@ -995,8 +995,10 @@ function MenuImportModal({
 
   async function downloadTemplate() {
     try {
-      const XLSX = await import('xlsx');
-      const data = showBarcode
+      const { downloadBlob, writeSpreadsheet } = await import(
+        '../../utils/spreadsheet'
+      );
+      const data: Array<Array<string | number>> = showBarcode
         ? [
             ['Category', 'Name', 'Price', 'VAT', 'Kg', 'Barcode'],
             ['Drinks', 'Coca-Cola 330ml', 100, 20, 'No', 5449000000996],
@@ -1010,10 +1012,7 @@ function MenuImportModal({
             ['Food', 'Margherita Pizza', 6.5, 20, 'No', 'KITCHEN'],
             ['Food', 'Prosciutto (per kg)', 18, 20, 'Yes', 'KITCHEN'],
           ];
-      const ws = XLSX.utils.aoa_to_sheet(data);
-      const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, 'Menu');
-      XLSX.writeFile(wb, 'menu-template.xlsx');
+      downloadBlob(await writeSpreadsheet(data, 'Menu'), 'menu-template.xlsx');
     } catch (e: any) {
       setError(e?.message || t('adminMenu.templateFailed'));
     }

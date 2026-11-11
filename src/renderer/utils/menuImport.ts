@@ -1,5 +1,5 @@
 /**
- * Parse a spreadsheet (.xlsx / .xls / .csv) of menu items into structured
+ * Parse a spreadsheet (.xlsx / .csv) of menu items into structured
  * rows the admin can review before importing. Designed to be forgiving:
  *
  *  - Reads EVERY sheet. A sheet without a "category" column falls back to
@@ -13,8 +13,8 @@
  *  - Reads a "Barcode" column (shop mode stores it as the item's sku) from
  *    the cell's real value, not Excel's "8.7148E+12" display text.
  *
- * The heavy `xlsx` dependency is imported lazily by the caller so it only
- * loads when the admin actually opens the importer.
+ * Reading the file is the caller's job (`spreadsheet.ts`, loaded only when
+ * the admin opens the importer); this module works on rows of cells.
  */
 
 import { normalizeProductCode } from '@shared/barcodeScan';
@@ -372,26 +372,17 @@ export function rowsFromSheet(
 }
 
 /**
- * Parse a workbook ArrayBuffer into menu rows. `xlsx` is passed in by the
- * caller (lazy-loaded) to keep this module dependency-free and testable.
+ * Menu rows from the sheets of a file. The caller reads the file
+ * (`readSpreadsheet` in `spreadsheet.ts`), which keeps this module free of
+ * the spreadsheet libraries and testable.
  */
 export function parseMenuWorkbook(
-  XLSX: typeof import('xlsx'),
-  data: ArrayBuffer,
+  sheets: Array<{ name: string; rows: unknown[][] }>,
 ): MenuParseResult {
   const warnings: string[] = [];
-  const wb = XLSX.read(data, { type: 'array' });
   const rows: ParsedMenuRow[] = [];
-  for (const sheetName of wb.SheetNames) {
-    const sheet = wb.Sheets[sheetName];
-    if (!sheet) continue;
-    const aoa = XLSX.utils.sheet_to_json<unknown[]>(sheet, {
-      header: 1,
-      raw: true,
-      blankrows: false,
-      defval: null,
-    });
-    rows.push(...rowsFromSheet(sheetName, aoa, warnings));
+  for (const sheet of sheets) {
+    rows.push(...rowsFromSheet(sheet.name, sheet.rows, warnings));
   }
 
   // De-duplicate identical (category + name) rows within the file; keep the

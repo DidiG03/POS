@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import * as XLSX from 'xlsx';
+import { readSpreadsheet, writeSpreadsheet } from './spreadsheet';
 import {
   parseBarcode,
   parseMenuWorkbook,
@@ -185,16 +185,17 @@ describe('barcodes (shop mode)', () => {
     expect(warnings).toEqual([]);
   });
 
-  it('keeps a shared barcode on the first product only', () => {
-    const ws = XLSX.utils.aoa_to_sheet([
-      ['Kategoria', 'Emri', 'Çmimi', 'Barcode'],
-      ['Patatina', 'Doritos Nacho', 150, 8606017379393],
-      ['Patatina', 'Doritos Nacho F1', 150, 8606017379393],
-    ]);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'Menu');
-    const buf = XLSX.write(wb, { type: 'array', bookType: 'xlsx' });
-    const { rows, warnings } = parseMenuWorkbook(XLSX, buf);
+  it('keeps a shared barcode on the first product only', async () => {
+    const file = await writeSpreadsheet(
+      [
+        ['Kategoria', 'Emri', 'Çmimi', 'Barcode'],
+        ['Patatina', 'Doritos Nacho', 150, 8606017379393],
+        ['Patatina', 'Doritos Nacho F1', 150, 8606017379393],
+      ],
+      'Menu',
+    );
+    const sheets = await readSpreadsheet(await file.arrayBuffer());
+    const { rows, warnings } = parseMenuWorkbook(sheets);
     expect(rows.map((r) => r.sku)).toEqual(['8606017379393', undefined]);
     expect(warnings.join(' ')).toContain('8606017379393');
   });
