@@ -91,6 +91,12 @@ import {
 } from './services/adminAlerts';
 import { stripTransferTagsFromNote } from '@shared/utils/transferNote';
 import { captureException } from './services/sentry';
+import {
+  VOID_ITEM_PREFIX,
+  VOID_TICKET_PREFIX,
+  checkPaymentForAlerts,
+  checkVoidForAlerts,
+} from './services/fraudAlerts';
 import * as reservationsService from './services/reservations';
 import {
   assertDiningFloorEnabled,
@@ -327,130 +333,6 @@ async function getCookerEnabledFromSettings(): Promise<boolean> {
   return true;
 }
 
-async function maybeAlertSuspiciousVoidsLocal(input: {
-  actorUserId: number;
-  kind: 'VOID_ITEM' | 'VOID_TICKET';
-}) {
-  // Conservative thresholds to avoid false accusations.
-  const windowMinutes = 60;
-  const threshold = input.kind === 'VOID_TICKET' ? 3 : 6;
-  const cooldownMinutes = 60;
-  const since = new Date(Date.now() - windowMinutes * 60 * 1000);
-  const prefix =
-    input.kind === 'VOID_TICKET' ? 'Voided ticket on ' : 'Voided item on ';
-
-  const count = await prisma.notification
-    .count({
-      where: {
-        userId: input.actorUserId,
-        type: 'OTHER' as any,
-        createdAt: { gte: since } as any,
-        message: { startsWith: prefix } as any,
-      } as any,
-    })
-    .catch(() => 0);
-  if (count < threshold) return;
-
-  const actor = await prisma.user
-    .findUnique({ where: { id: input.actorUserId } })
-    .catch(() => null as any);
-  const actorName = actor?.displayName
-    ? String(actor.displayName)
-    : `User #${input.actorUserId}`;
-
-  const admins = await prisma.user
-    .findMany({ where: { role: 'ADMIN', active: true } as any, take: 50 })
-    .catch(() => []);
-
-  const cooldownSince = new Date(Date.now() - cooldownMinutes * 60 * 1000);
-  const actionLabel =
-    input.kind === 'VOID_TICKET' ? 'voided tickets' : 'voided items';
-  const msg = `Unusual activity (auto-check): ${count} ${actionLabel} by ${actorName} in the last ${windowMinutes} minutes. This can be normal during corrections; please review if unexpected.`;
-
-  for (const a of admins as any[]) {
-    const already = await prisma.notification
-      .count({
-        where: {
-          userId: a.id,
-          type: 'SECURITY' as any,
-          createdAt: { gte: cooldownSince } as any,
-          message: { startsWith: 'Unusual activity (auto-check):' } as any,
-        } as any,
-      })
-      .catch(() => 0);
-    if (already > 0) continue;
-    await prisma.notification
-      .create({
-        data: { userId: a.id, type: 'SECURITY' as any, message: msg } as any,
-      })
-      .catch(() => {});
-  }
-}
-
-async function maybeAlertVoidSoonAfterPaymentLocal(input: {
-  actorUserId: number;
-  area: string;
-  tableLabel: string;
-  kind: 'VOID_ITEM' | 'VOID_TICKET';
-}) {
-  const windowMinutes = 10;
-  const cooldownMinutes = 60;
-  const now = Date.now();
-  const cooldownSince = new Date(now - cooldownMinutes * 60 * 1000);
-  const key = `${input.area}:${input.tableLabel}`;
-
-  const row = await prisma.syncState
-    .findUnique({ where: { key: 'antitheft:lastPaymentAt' } })
-    .catch(() => null as any);
-  const map = ((row?.valueJson as any) || {}) as Record<string, string>;
-  const lastIso = map[key];
-  if (!lastIso) return;
-  const last = new Date(lastIso);
-  const deltaMs = now - last.getTime();
-  if (
-    !Number.isFinite(deltaMs) ||
-    deltaMs < 0 ||
-    deltaMs > windowMinutes * 60 * 1000
-  )
-    return;
-
-  const actor = await prisma.user
-    .findUnique({ where: { id: input.actorUserId } })
-    .catch(() => null as any);
-  const actorName = actor?.displayName
-    ? String(actor.displayName)
-    : `User #${input.actorUserId}`;
-  const admins = await prisma.user
-    .findMany({ where: { role: 'ADMIN', active: true } as any, take: 50 })
-    .catch(() => []);
-
-  const minutesAgo = Math.max(0, Math.round(deltaMs / 60000));
-  const actionLabel =
-    input.kind === 'VOID_TICKET' ? 'voided a ticket' : 'voided an item';
-  const msg =
-    `Unusual activity (auto-check): ${actorName} ${actionLabel} on ${input.area} Table ${input.tableLabel} about ${minutesAgo} minutes after payment. ` +
-    `This can be normal (corrections/reprints); please review if unexpected.`;
-
-  for (const a of admins as any[]) {
-    const already = await prisma.notification
-      .count({
-        where: {
-          userId: a.id,
-          type: 'SECURITY' as any,
-          createdAt: { gte: cooldownSince } as any,
-          message: { includes: 'minutes after payment' } as any,
-        } as any,
-      })
-      .catch(() => 0);
-    if (already > 0) continue;
-    await prisma.notification
-      .create({
-        data: { userId: a.id, type: 'SECURITY' as any, message: msg } as any,
-      })
-      .catch(() => {});
-  }
-}
-
 type CorsPolicy = {
   allowOrigin: (
     origin: string | undefined,
@@ -459,17 +341,6 @@ type CorsPolicy = {
 };
 
 type AuthContext = { userId: number; role?: string } | null;
-
-// Suspicious-pattern detection (best-effort, in-memory) for payment adjustments.
-const payAdjustByUser = new Map<
-  number,
-  {
-    discountCount: number;
-    serviceRemovalCount: number;
-    resetAt: number;
-    lastAlertAt: number;
-  }
->();
 
 function send(
   res: http.ServerResponse,
@@ -3077,125 +2948,15 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
                 tableLabel: String(payload.tableLabel || ''),
                 meta,
               }).catch(() => undefined);
-              const k = `${payload.area}:${payload.tableLabel}`;
-              const payRow = await prisma.syncState
-                .findUnique({ where: { key: 'antitheft:lastPaymentAt' } })
-                .catch(() => null as any);
-              const map = ((payRow?.valueJson as any) || {}) as Record<
-                string,
-                string
-              >;
-              map[k] = new Date().toISOString();
-              if (payRow?.key) {
-                await prisma.syncState
-                  .update({
-                    where: { key: 'antitheft:lastPaymentAt' },
-                    data: { valueJson: map } as any,
-                  })
-                  .catch(() => null);
-              } else {
-                await prisma.syncState
-                  .create({
-                    data: {
-                      key: 'antitheft:lastPaymentAt',
-                      valueJson: map,
-                    } as any,
-                  })
-                  .catch(() => null);
-              }
-
-              // Suspicious-pattern alerting for payment adjustments (discounts / service charge removal).
-              const userId = Number(meta?.userId || 0);
-              const discountAmt = Number(meta?.discountAmount || 0);
-              const scEnabled = Boolean(meta?.serviceChargeEnabled);
-              const scApplied = Boolean(meta?.serviceChargeApplied);
-              const scAmt = Number(meta?.serviceChargeAmount || 0);
-              if (userId) {
-                const windowMinutes = 60;
-                const cooldownMinutes = 60;
-                const now = Date.now();
-                const cur = payAdjustByUser.get(userId);
-                if (!cur || cur.resetAt <= now) {
-                  payAdjustByUser.set(userId, {
-                    discountCount: 0,
-                    serviceRemovalCount: 0,
-                    resetAt: now + windowMinutes * 60 * 1000,
-                    lastAlertAt: cur?.lastAlertAt || 0,
-                  });
-                }
-                const st = payAdjustByUser.get(userId)!;
-                if (Number.isFinite(discountAmt) && discountAmt > 0)
-                  st.discountCount += 1;
-                if (
-                  scEnabled &&
-                  !scApplied &&
-                  Number.isFinite(scAmt) &&
-                  scAmt > 0
-                )
-                  st.serviceRemovalCount += 1;
-                payAdjustByUser.set(userId, st);
-
-                const canAlert =
-                  !st.lastAlertAt ||
-                  now - st.lastAlertAt > cooldownMinutes * 60 * 1000;
-                // Looked up only when an alert goes out: they ran on every
-                // payment (perf, QA v0.2.103).
-                const alerting =
-                  canAlert &&
-                  (st.discountCount >= 5 || st.serviceRemovalCount >= 3);
-                const actor = alerting
-                  ? await prisma.user
-                      .findUnique({ where: { id: userId } })
-                      .catch(() => null as any)
-                  : null;
-                const actorName = actor?.displayName
-                  ? String(actor.displayName)
-                  : `User #${userId}`;
-                const admins = alerting
-                  ? await prisma.user
-                      .findMany({
-                        where: { role: 'ADMIN', active: true } as any,
-                        take: 50,
-                      })
-                      .catch(() => [])
-                  : [];
-
-                if (canAlert && st.discountCount >= 5) {
-                  const msg =
-                    `Unusual activity (auto-check): ${st.discountCount} discounted payments by ${actorName} in the last ${windowMinutes} minutes. ` +
-                    `This can be normal during promotions; please review if unexpected.`;
-                  for (const a of admins as any[]) {
-                    await prisma.notification
-                      .create({
-                        data: {
-                          userId: a.id,
-                          type: 'SECURITY' as any,
-                          message: msg,
-                        } as any,
-                      })
-                      .catch(() => {});
-                  }
-                  st.lastAlertAt = now;
-                  payAdjustByUser.set(userId, st);
-                } else if (canAlert && st.serviceRemovalCount >= 3) {
-                  const msg =
-                    `Unusual activity (auto-check): ${st.serviceRemovalCount} service charge removals by ${actorName} in the last ${windowMinutes} minutes. ` +
-                    `This can be normal during corrections; please review if unexpected.`;
-                  for (const a of admins as any[]) {
-                    await prisma.notification
-                      .create({
-                        data: {
-                          userId: a.id,
-                          type: 'SECURITY' as any,
-                          message: msg,
-                        } as any,
-                      })
-                      .catch(() => {});
-                  }
-                  st.lastAlertAt = now;
-                  payAdjustByUser.set(userId, st);
-                }
-              }
+              // Unusual-activity checks, shared with the till
+              // (`fraudAlerts.ts`). The actor is the signed-in user.
+              await checkPaymentForAlerts({
+                actorUserId:
+                  Number(auth?.userId || 0) || Number(meta?.userId || 0),
+                area: String(payload.area || ''),
+                tableLabel: String(payload.tableLabel || ''),
+                meta,
+              });
             }
           } catch {
             // ignore
@@ -3721,7 +3482,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           );
         }
 
-        const message = `Voided item on ${area} ${tableLabel}: ${voidReport.name || item.name} x${voidReport.qty ?? Number(item.qty || 1)}${await verifiedApproverSuffix(secret, auth, approvedByAdminToken)}`;
+        const message = `${VOID_ITEM_PREFIX}${area} ${tableLabel}: ${voidReport.name || item.name} x${voidReport.qty ?? Number(item.qty || 1)}${await verifiedApproverSuffix(secret, auth, approvedByAdminToken)}`;
         await notifyAdminsAndActor({
           message,
           actorUserId: Number(userId),
@@ -3759,11 +3520,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           // best-effort
         }
         // Best-effort suspicious-pattern alerting (admins only; conservative thresholds).
-        void maybeAlertSuspiciousVoidsLocal({
-          actorUserId: Number(userId),
-          kind: 'VOID_ITEM',
-        });
-        void maybeAlertVoidSoonAfterPaymentLocal({
+        void checkVoidForAlerts({
           actorUserId: Number(userId),
           area: String(area),
           tableLabel: String(tableLabel),
@@ -3924,7 +3681,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             corsOrigin,
           );
         }
-        const message = `Voided ticket on ${area} ${tableLabel}${reason ? `: ${reason}` : ''}${await verifiedApproverSuffix(secret, auth, approvedByAdminToken)}`;
+        const message = `${VOID_TICKET_PREFIX}${area} ${tableLabel}${reason ? `: ${reason}` : ''}${await verifiedApproverSuffix(secret, auth, approvedByAdminToken)}`;
         await notifyAdminsAndActor({
           message,
           actorUserId: Number(userId),
@@ -3997,11 +3754,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           // best-effort
         }
         // Best-effort suspicious-pattern alerting (admins only; conservative thresholds).
-        void maybeAlertSuspiciousVoidsLocal({
-          actorUserId: Number(userId),
-          kind: 'VOID_TICKET',
-        });
-        void maybeAlertVoidSoonAfterPaymentLocal({
+        void checkVoidForAlerts({
           actorUserId: Number(userId),
           area: String(area),
           tableLabel: String(tableLabel),

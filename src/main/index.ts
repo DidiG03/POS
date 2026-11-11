@@ -142,6 +142,12 @@ import {
   setSecurityEventSink,
 } from './services/security';
 import { createSecurityEventStore } from './services/securityEventStore';
+import {
+  VOID_ITEM_PREFIX,
+  VOID_TICKET_PREFIX,
+  checkPaymentForAlerts,
+  checkVoidForAlerts,
+} from './services/fraudAlerts';
 import { normalizePin } from '@shared/staffPin';
 import { IpcAuthorizationError, ipcHandle } from './services/ipcGuard';
 import { authorizeCreateUser } from './services/createUserAuth';
@@ -2738,6 +2744,15 @@ ipcHandle('tickets:print', async (_e, input, ctx) => {
     } catch {
       // do not block printing/logging
     }
+    // Unusual-activity checks (many discounts, service charge removed),
+    // the same ones a payment from a phone gets (`fraudAlerts.ts`).
+    await checkPaymentForAlerts({
+      actorUserId:
+        Number(ctx.session?.userId || 0) || Number(meta?.userId || 0),
+      area,
+      tableLabel,
+      meta,
+    });
 
     const kind = String(meta?.kind || '').toUpperCase();
     let payOwnerId: number | null = null;
@@ -4110,7 +4125,7 @@ ipcHandle('tickets:voidItem', async (_e, input, ctx) => {
   // Paid, or no live line with that id: nothing changed.
   if (voided !== 'ok') return false;
 
-  const message = `Voided item on ${area} ${tableLabel}: ${voidReport.name || item.name} x${voidReport.qty ?? Number(item.qty || 1)}${await verifiedApproverSuffix(actorIsAdmin, approvedByAdminToken)}`;
+  const message = `${VOID_ITEM_PREFIX}${area} ${tableLabel}: ${voidReport.name || item.name} x${voidReport.qty ?? Number(item.qty || 1)}${await verifiedApproverSuffix(actorIsAdmin, approvedByAdminToken)}`;
   // Notify actor + all admins (anti-theft audit trail)
   await prisma.notification
     .create({ data: { userId, type: 'OTHER' as any, message } })
@@ -4132,6 +4147,13 @@ ipcHandle('tickets:voidItem', async (_e, input, ctx) => {
   } catch {
     // ignore
   }
+  // Unusual-activity checks, as for a void from a phone (`fraudAlerts.ts`).
+  void checkVoidForAlerts({
+    actorUserId: Number(userId),
+    area,
+    tableLabel,
+    kind: 'VOID_ITEM',
+  });
   try {
     broadcastTicketsChanged({
       area,
@@ -4275,7 +4297,7 @@ ipcHandle('tickets:voidTicket', async (_e, input, ctx) => {
     return false;
   }
 
-  const message = `Voided ticket on ${area} ${tableLabel}${reason ? `: ${reason}` : ''}${await verifiedApproverSuffix(actorIsAdmin, approvedByAdminToken)}`;
+  const message = `${VOID_TICKET_PREFIX}${area} ${tableLabel}${reason ? `: ${reason}` : ''}${await verifiedApproverSuffix(actorIsAdmin, approvedByAdminToken)}`;
   // Notify actor + all admins (anti-theft audit trail)
   await prisma.notification
     .create({ data: { userId, type: 'OTHER' as any, message } })
@@ -4340,6 +4362,13 @@ ipcHandle('tickets:voidTicket', async (_e, input, ctx) => {
       actorUserId: userId,
       whole: true,
       reason,
+    });
+    // Unusual-activity checks, as for a void from a phone.
+    void checkVoidForAlerts({
+      actorUserId: Number(userId),
+      area,
+      tableLabel,
+      kind: 'VOID_TICKET',
     });
   }
   try {
