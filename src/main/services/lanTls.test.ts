@@ -28,30 +28,27 @@ afterEach(() => {
 
 const hosts = { dns: ['till-mac', 'till-mac.local'], ips: ['192.168.1.20'] };
 
-/** GET over TLS, trusting only `pin`; resolves with the status code. */
-function getWithPin(port: number, pin: string): Promise<number> {
+/**
+ * GET over TLS trusting only `cert`, the way the apps do: a fresh
+ * connection each time, verified before the request is sent.
+ */
+function getTrusting(port: number, cert: Buffer): Promise<number> {
   return new Promise((resolve, reject) => {
-    const req = https.get(
-      {
-        host: '127.0.0.1',
-        port,
-        rejectUnauthorized: false,
-        checkServerIdentity: () => undefined,
-      },
-      (res) => {
-        res.resume();
-        resolve(res.statusCode || 0);
-      },
-    );
-    req.on('socket', (socket: any) => {
-      socket.on('secureConnect', () => {
-        const peer = socket.getPeerX509Certificate?.();
-        if (!peer || tlsPinOfCertificate(peer.toString()) !== pin) {
-          req.destroy(new Error('pin mismatch'));
-        }
-      });
-    });
-    req.on('error', reject);
+    https
+      .get(
+        {
+          host: '127.0.0.1',
+          port,
+          agent: false,
+          ca: cert,
+          checkServerIdentity: () => undefined,
+        },
+        (res) => {
+          res.resume();
+          resolve(res.statusCode || 0);
+        },
+      )
+      .on('error', reject);
   });
 }
 
@@ -154,7 +151,7 @@ describe('ensureTlsMaterial', () => {
 });
 
 describe('the certificate in use', () => {
-  it('serves TLS 1.2+ to a client that pins it, and not to one that pins another', async () => {
+  it('serves TLS 1.2+ to a client that trusts it, and not to one that trusts another till', async () => {
     const tls = await ensureTlsMaterial(tempDir(), hosts);
     const server = https.createServer(
       { key: tls.key, cert: tls.cert, minVersion: 'TLSv1.2' },
@@ -163,9 +160,9 @@ describe('the certificate in use', () => {
     await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
     const port = (server.address() as { port: number }).port;
     try {
-      expect(await getWithPin(port, tls.pin)).toBe(200);
+      expect(await getTrusting(port, tls.cert)).toBe(200);
       const other = await ensureTlsMaterial(tempDir(), hosts);
-      await expect(getWithPin(port, other.pin)).rejects.toThrow(/pin mismatch/);
+      await expect(getTrusting(port, other.cert)).rejects.toThrow();
     } finally {
       server.close();
     }
