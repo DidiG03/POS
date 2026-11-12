@@ -25,10 +25,15 @@ const SQLITE_CACHE_SIZE_KIB = 32_768;
 /** 64 MB mmap for sequential TicketLog / Order scans. */
 const SQLITE_MMAP_SIZE_BYTES = 67_108_864;
 
+/**
+ * `synchronous=FULL`: a committed sale is on disk before the till answers.
+ * With NORMAL (the setting until v0.2.111) a power cut could lose the last
+ * few commits, including a sale whose receipt had already printed.
+ */
 const PRAGMAS = [
   'PRAGMA journal_mode=WAL;',
   `PRAGMA busy_timeout=${SQLITE_BUSY_TIMEOUT_MS};`,
-  'PRAGMA synchronous=NORMAL;',
+  'PRAGMA synchronous=FULL;',
   'PRAGMA foreign_keys=ON;',
   'PRAGMA temp_store=MEMORY;',
   `PRAGMA cache_size=-${SQLITE_CACHE_SIZE_KIB};`,
@@ -40,7 +45,7 @@ const PRAGMAS = [
 const ENCRYPTED_PRAGMAS = [
   'PRAGMA journal_mode=WAL;',
   `PRAGMA busy_timeout=${SQLITE_BUSY_TIMEOUT_MS};`,
-  'PRAGMA synchronous=NORMAL;',
+  'PRAGMA synchronous=FULL;',
   'PRAGMA foreign_keys=ON;',
   'PRAGMA temp_store=MEMORY;',
   `PRAGMA cache_size=-${SQLITE_CACHE_SIZE_KIB};`,

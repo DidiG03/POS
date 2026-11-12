@@ -1325,6 +1325,10 @@ async function startHostDatabaseAndServicesOp(): Promise<void> {
           });
           if (backup?.file) {
             console.log(`[startup] Pre-migration backup at ${backup.file}`);
+          } else if (backup && !backup.ok) {
+            console.warn(
+              `[startup] pre-migration backup not made: ${backup.error || 'unknown reason'}`,
+            );
           }
         },
       });

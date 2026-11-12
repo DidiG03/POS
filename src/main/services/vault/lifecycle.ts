@@ -85,6 +85,15 @@ function withVaultOp<T>(fn: () => Promise<T>): Promise<T> {
   return run;
 }
 
+/**
+ * The key of the ledger that is open now, or null when it is not
+ * encrypted (or still locked). For checking a backup file made by this
+ * till; never sent anywhere.
+ */
+export function openLedgerEncryptionKey(): string | null {
+  return unlockedDek ? dekToEncryptionKey(unlockedDek) : null;
+}
+
 export function isVaultRequired(): boolean {
   const flag = String(process.env.POS_VAULT || '').trim();
   if (flag === '0') return false;

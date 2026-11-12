@@ -3,6 +3,8 @@ import fs from 'node:fs';
 import { join, resolve as resolvePath } from 'node:path';
 import { getOpenSqliteMode, prisma } from '@db/client';
 import { looksLikeSqliteCiphertext } from './vault/sqliteCipher';
+import { checkLedgerFile } from './ledgerFileCheck';
+import { openLedgerEncryptionKey } from './vault/lifecycle';
 
 export async function getSqliteDbFilePath(): Promise<string | null> {
   try {
@@ -72,18 +74,33 @@ export async function createDbBackupNow(): Promise<{
     }
 
     // VACUUM INTO on an encrypted connection can emit a plaintext clone.
+    let written = false;
     if (getOpenSqliteMode() !== 'encrypted') {
       try {
         await (prisma as any).$executeRawUnsafe(
           `VACUUM INTO '${dest.replace(/'/g, "''")}';`,
         );
-        return { ok: true, file: dest };
+        written = true;
       } catch {
         // fallback to file copy
       }
     }
+    if (!written) fs.copyFileSync(dbPath, dest);
 
-    fs.copyFileSync(dbPath, dest);
+    // A backup nobody can restore is worse than none: it is read back and
+    // checked before it is reported as made.
+    const verdict = await checkLedgerFile(dest, openLedgerEncryptionKey());
+    if (!verdict.ok) {
+      try {
+        fs.unlinkSync(dest);
+      } catch {
+        // leave it; it is reported as failed either way
+      }
+      return {
+        ok: false,
+        error: `The backup did not pass its check and was discarded. ${verdict.detail}`,
+      };
+    }
     return { ok: true, file: dest };
   } catch (e: any) {
     return { ok: false, error: String(e?.message || e || 'Backup failed') };
@@ -140,6 +157,16 @@ export async function restoreDbBackup(
       ok: false,
       error:
         'This backup was made while Disk protection was on. Turn Disk protection on again to restore it.',
+    };
+  }
+
+  // Checked before anything is touched: a damaged or cut-short file would
+  // otherwise replace a working ledger and only fail at the next start.
+  const verdict = await checkLedgerFile(src, openLedgerEncryptionKey());
+  if (!verdict.ok) {
+    return {
+      ok: false,
+      error: `This backup cannot be restored, so nothing was changed. ${verdict.detail}`,
     };
   }
 
