@@ -22,6 +22,7 @@ import {
 } from './menuStock';
 import { storePlanBlocksTables } from './license';
 import { isPaymentReprint } from './paymentSettle';
+import { recordPaymentBillEvents } from './billEvents';
 import { printJobWasErased, readLedgerErasedThroughId } from './ledgerErase';
 
 type Db = {
@@ -280,6 +281,8 @@ export async function persistReceiptAudit(input: {
   idempotencyKey?: string;
   status: 'SENT' | 'FAILED';
   settings?: unknown;
+  /** Where the payment came from, for the bill-event record. */
+  source?: 'till' | 'phone';
 }): Promise<PersistReceiptAuditResult> {
   const key = optionalKey(input.idempotencyKey);
   const settings =
@@ -320,6 +323,17 @@ export async function persistReceiptAudit(input: {
         orderId: sale?.orderId ?? null,
       } as PersistReceiptAuditResult;
     });
+    // A discount, a service charge left off, a corrected price: kept for
+    // good (`billEvents.ts`). Only for the call that recorded the sale, so
+    // a retry does not write them twice.
+    if (result.orderId) {
+      await recordPaymentBillEvents(
+        input.payload,
+        settings,
+        input.source ?? 'till',
+        { orderId: result.orderId },
+      );
+    }
     return result;
   } catch (e: any) {
     if (e?.code === 'P2002' && key) {

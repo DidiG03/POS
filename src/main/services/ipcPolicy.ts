@@ -70,6 +70,7 @@ export const IPC_POLICIES: Readonly<Record<string, IpcPolicy>> = {
   'admin:getReview': { allow: ADMIN },
   'admin:getSalesTrends': { allow: ADMIN },
   'admin:getSecurityLog': { allow: ADMIN },
+  'admin:listBillEvents': { allow: ADMIN },
   'admin:getTopSellingToday': { allow: ADMIN },
   'admin:listNotifications': { allow: ADMIN },
   'admin:listShifts': { allow: ADMIN },

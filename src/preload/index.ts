@@ -117,6 +117,8 @@ const api: Api = {
       ipcRenderer.invoke('admin:getSalesTrends', input),
     getSecurityLog: (limit?: number) =>
       ipcRenderer.invoke('admin:getSecurityLog', { limit }),
+    listBillEvents: (input) =>
+      ipcRenderer.invoke('admin:listBillEvents', input || {}),
     getReview: (input) => ipcRenderer.invoke('admin:getReview', input),
   },
   kds: {

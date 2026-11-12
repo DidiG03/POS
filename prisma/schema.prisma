@@ -560,6 +560,34 @@ model SecurityEvent {
   @@index([createdAt])
 }
 
+/// What was taken off a bill, by whom and on whose approval: voids,
+/// discounts, a service charge removed, a price corrected. Written by
+/// `billEvents.ts`, never edited and never pruned. Names are copied in, so
+/// the record outlives the staff member's account.
+model BillEvent {
+  id           Int      @id @default(autoincrement())
+  /// VOID_ITEM | VOID_TICKET | AUTO_VOID | DISCOUNT |
+  /// SERVICE_CHARGE_REMOVED | PRICE_CORRECTED
+  kind         String
+  area         String   @default("")
+  tableLabel   String   @default("")
+  actorUserId  Int?
+  actorName    String?
+  approvedById Int?
+  approverName String?
+  /// How much came off the bill, when that is known.
+  amount       Decimal?
+  reason       String?
+  /// till | phone | auto
+  source       String?
+  detailsJson  Json?
+  createdAt    DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([kind, createdAt])
+  @@index([actorUserId, createdAt])
+}
+
 enum ReservationStatus {
   BOOKED
   SEATED

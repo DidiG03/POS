@@ -137,6 +137,7 @@ export const LAN_ROUTE_POLICIES: Readonly<Record<string, LanRoutePolicy>> = {
   'POST /notifications/mark-all-read': { allow: 'session' },
 
   // ----------------------------------------------------------------- admin
+  'GET /admin/bill-events': { allow: ADMIN },
   'GET /admin/overview': { allow: ADMIN },
   'GET /admin/sales-trends': { allow: ADMIN },
   'GET /admin/users': { allow: ADMIN },

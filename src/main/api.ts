@@ -154,6 +154,12 @@ import {
 import { findStaleBillPayment } from './services/staleBill';
 import { checkPaymentApproval } from './services/paymentApproval';
 import { stampPaymentForSession } from './services/paymentStamp';
+import {
+  billEventLines,
+  billEventLinesAmount,
+  listBillEvents,
+  recordBillEvent,
+} from './services/billEvents';
 import { getTableTooltip, listPaidTablesForDay } from './services/tableTooltip';
 import {
   bumpKdsItem,
@@ -885,6 +891,19 @@ async function verifiedApproverSuffix(
     .catch(() => null);
   const name = String((admin as any)?.displayName || '').trim();
   return ` (approved by: ${name || `admin #${approved.userId}`})`;
+}
+
+/** The admin a void was approved by: the signed-in admin, or the PIN's. */
+async function verifiedApproverId(
+  secret: string,
+  auth: AuthContext,
+  token: unknown,
+): Promise<number | null> {
+  if (auth?.role === 'ADMIN') return Number(auth.userId) || null;
+  const tok = String(token || '').trim();
+  if (!tok) return null;
+  const approved = await verifyApprovalToken(secret, tok);
+  return approved ? Number(approved.userId) || null : null;
 }
 
 async function releaseLanApproval(
@@ -3183,6 +3202,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
                 idempotencyKey: printIdempotencyKey || undefined,
                 status,
                 settings,
+                source: 'phone',
               });
               return saved?.duplicate ? null : (saved?.printJobId ?? null);
             } catch (e: any) {
@@ -3530,6 +3550,24 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           );
         }
 
+        // Kept for good, under the person signed in (`billEvents.ts`).
+        {
+          const lines = billEventLines([voidReport.line ?? item]);
+          await recordBillEvent({
+            kind: 'VOID_ITEM',
+            area: String(area),
+            tableLabel: String(tableLabel),
+            actorUserId: Number(auth?.userId || 0) || Number(userId),
+            approvedById: await verifiedApproverId(
+              secret,
+              auth,
+              approvedByAdminToken,
+            ),
+            amount: billEventLinesAmount(lines),
+            source: 'phone',
+            details: { lines },
+          });
+        }
         const message = `${VOID_ITEM_PREFIX}${area} ${tableLabel}: ${voidReport.name || item.name} x${voidReport.qty ?? Number(item.qty || 1)}${await verifiedApproverSuffix(secret, auth, approvedByAdminToken)}`;
         await notifyAdminsAndActor({
           message,
@@ -3776,6 +3814,25 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           );
         }
         if (voided === 'ok') {
+          // Kept for good, under the person signed in (`billEvents.ts`).
+          {
+            const lines = billEventLines(ticketVoidReport.lines);
+            await recordBillEvent({
+              kind: 'VOID_TICKET',
+              area: String(area),
+              tableLabel: String(tableLabel),
+              actorUserId: Number(auth?.userId || 0) || Number(userId),
+              approvedById: await verifiedApproverId(
+                secret,
+                auth,
+                approvedByAdminToken,
+              ),
+              amount: billEventLinesAmount(lines),
+              reason: reason ? String(reason) : null,
+              source: 'phone',
+              details: { lines },
+            });
+          }
           await notifyOwnerOfVoid({
             area: String(area),
             tableLabel: String(tableLabel),
@@ -4561,6 +4618,20 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           },
           corsOrigin,
         );
+      }
+      // Voids, discounts and corrections, kept for good (`billEvents.ts`).
+      if (req.method === 'GET' && pathname === '/admin/bill-events') {
+        const q = parsed.query as Record<string, unknown>;
+        const one = (v: unknown) => String(Array.isArray(v) ? v[0] : (v ?? ''));
+        const rows = await listBillEvents({
+          from: one(q.from) ? new Date(one(q.from)) : null,
+          to: one(q.to) ? new Date(one(q.to)) : null,
+          kinds: one(q.kinds) ? one(q.kinds).split(',') : null,
+          actorUserId: Number(one(q.actorUserId)) || null,
+          limit: Number(one(q.limit)) || undefined,
+          beforeId: Number(one(q.beforeId)) || null,
+        });
+        return send(res, 200, rows, corsOrigin);
       }
       if (req.method === 'GET' && pathname === '/admin/sales-trends') {
         const range = (parsed.query.range as string) || 'daily';

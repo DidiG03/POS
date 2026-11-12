@@ -35,6 +35,22 @@ function fakeDb(now: () => number) {
       }
     },
     securityNotes: () => notes.filter((n) => n.type === 'SECURITY'),
+    // Voids are counted from the permanent record. The fake keeps them
+    // with the notes, told apart by the same prefixes.
+    billEvent: {
+      count: async ({ where }: any) =>
+        notes.filter(
+          (n) =>
+            n.type === 'OTHER' &&
+            n.userId === where.actorUserId &&
+            n.createdAt >= where.createdAt.gte &&
+            n.message.startsWith(
+              where.kind === 'VOID_TICKET'
+                ? 'Voided ticket on '
+                : 'Voided item on ',
+            ),
+        ).length,
+    },
     notification: {
       count: async ({ where }: any) =>
         notes.filter(

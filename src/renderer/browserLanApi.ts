@@ -1829,6 +1829,17 @@ export function installBrowserLanApi(): void {
           `/admin/sales-trends?range=${encodeURIComponent(range)}`,
         );
       },
+      async listBillEvents(input: any) {
+        const q = new URLSearchParams();
+        if (input?.from) q.set('from', String(input.from));
+        if (input?.to) q.set('to', String(input.to));
+        if (Array.isArray(input?.kinds) && input.kinds.length)
+          q.set('kinds', input.kinds.join(','));
+        if (input?.actorUserId) q.set('actorUserId', String(input.actorUserId));
+        if (input?.limit) q.set('limit', String(input.limit));
+        if (input?.beforeId) q.set('beforeId', String(input.beforeId));
+        return await goLan(`/admin/bill-events?${q.toString()}`);
+      },
       async getReview(input: any) {
         return await goLan('/admin/review', {
           method: 'POST',

@@ -35,6 +35,12 @@ import { coreServices } from './services/core';
 import { verifyManagerPin } from './services/managerPin';
 import { checkPaymentApproval } from './services/paymentApproval';
 import { stampPaymentForSession } from './services/paymentStamp';
+import {
+  billEventLines,
+  billEventLinesAmount,
+  listBillEvents,
+  recordBillEvent,
+} from './services/billEvents';
 import { parseOptionalIsoDate } from './services/lanRequestGuards';
 import { repairLocalSchema } from './services/localSchemaRepair';
 import { syncTableAreasToDb } from './services/tableAreasSync';
@@ -886,6 +892,23 @@ function startAutoVoidStaleTicketsLoop() {
               }
             },
           });
+          if (outcome === 'ok') {
+            // Nobody approved this one; the record says so for good.
+            const lines = billEventLines(unpaidItems);
+            await recordBillEvent({
+              kind: 'AUTO_VOID',
+              area,
+              tableLabel,
+              amount: billEventLinesAmount(lines),
+              reason,
+              source: 'auto',
+              details: {
+                lines,
+                tableOwnerId: actorUserId || null,
+                openedAt: openedAt ? openedAt.toISOString() : null,
+              },
+            });
+          }
           // Nothing left to void (all paid) or already voided: the table
           // is still past its limit and must not stay on the floor.
           if (outcome !== 'ok') {
@@ -4004,6 +4027,17 @@ async function verifiedApproverSuffix(
   return ` (approved by: ${name || `admin #${grant.userId}`})`;
 }
 
+/** The admin a void was approved by: the signed-in admin, or the PIN's. */
+function verifiedApproverId(
+  actorIsAdmin: boolean,
+  actorUserId: number,
+  token: unknown,
+): number | null {
+  if (actorIsAdmin) return Number(actorUserId) || null;
+  const grant = verifyApprovalToken(token);
+  return grant ? Number(grant.userId) || null : null;
+}
+
 // Void item: records a notification and returns true
 ipcHandle('tickets:voidItem', async (_e, input, ctx) => {
   const userId = Number(input?.userId);
@@ -4138,6 +4172,25 @@ ipcHandle('tickets:voidItem', async (_e, input, ctx) => {
   // Paid, or no live line with that id: nothing changed.
   if (voided !== 'ok') return false;
 
+  // Kept for good, under the person signed in (`billEvents.ts`).
+  {
+    const lines = billEventLines([voidReport.line ?? item]);
+    const actor = Number(ctx?.session?.userId || 0) || userId;
+    await recordBillEvent({
+      kind: 'VOID_ITEM',
+      area,
+      tableLabel,
+      actorUserId: actor,
+      approvedById: verifiedApproverId(
+        actorIsAdmin,
+        actor,
+        approvedByAdminToken,
+      ),
+      amount: billEventLinesAmount(lines),
+      source: 'till',
+      details: { lines },
+    });
+  }
   const message = `${VOID_ITEM_PREFIX}${area} ${tableLabel}: ${voidReport.name || item.name} x${voidReport.qty ?? Number(item.qty || 1)}${await verifiedApproverSuffix(actorIsAdmin, approvedByAdminToken)}`;
   // Notify actor + all admins (anti-theft audit trail)
   await prisma.notification
@@ -4361,6 +4414,26 @@ ipcHandle('tickets:voidTicket', async (_e, input, ctx) => {
   });
   if (voided === 'paid') return false;
   if (voided === 'ok') {
+    // Kept for good, under the person signed in (`billEvents.ts`).
+    {
+      const lines = billEventLines(ticketVoidReport.lines);
+      const actor = Number(ctx?.session?.userId || 0) || userId;
+      await recordBillEvent({
+        kind: 'VOID_TICKET',
+        area,
+        tableLabel,
+        actorUserId: actor,
+        approvedById: verifiedApproverId(
+          actorIsAdmin,
+          actor,
+          approvedByAdminToken,
+        ),
+        amount: billEventLinesAmount(lines),
+        reason: reason || null,
+        source: 'till',
+        details: { lines },
+      });
+    }
     await notifyOwnerOfVoid({
       area,
       tableLabel,
@@ -4619,6 +4692,18 @@ ipcHandle('admin:listNotifications', async (_e, input) => {
     createdAt: new Date(n.createdAt).toISOString(),
   }));
 });
+
+// Voids, discounts and corrections, kept for good (`billEvents.ts`).
+ipcHandle('admin:listBillEvents', async (_e, input) =>
+  listBillEvents({
+    from: input?.from ? new Date(input.from) : null,
+    to: input?.to ? new Date(input.to) : null,
+    kinds: Array.isArray(input?.kinds) ? input.kinds.map(String) : null,
+    actorUserId: Number(input?.actorUserId) || null,
+    limit: Number(input?.limit) || undefined,
+    beforeId: Number(input?.beforeId) || null,
+  }),
+);
 
 ipcHandle('admin:markAllNotificationsRead', async (_e, input) => {
   // Only mark the calling admin's own notifications as read — never wipe

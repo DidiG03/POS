@@ -1181,6 +1181,42 @@ export interface AdminShiftDTO {
   isOpen: boolean;
 }
 
+export type BillEventKindDTO =
+  | 'VOID_ITEM'
+  | 'VOID_TICKET'
+  | 'AUTO_VOID'
+  | 'DISCOUNT'
+  | 'SERVICE_CHARGE_REMOVED'
+  | 'PRICE_CORRECTED';
+
+export interface BillEventDTO {
+  id: number;
+  kind: BillEventKindDTO | string;
+  area: string;
+  tableLabel: string;
+  actorUserId: number | null;
+  actorName: string | null;
+  approvedById: number | null;
+  approverName: string | null;
+  /** How much came off the bill, when known. */
+  amount: number | null;
+  reason: string | null;
+  /** till | phone | auto */
+  source: string | null;
+  details: Record<string, unknown> | null;
+  createdAt: string;
+}
+
+export interface BillEventQueryDTO {
+  from?: string | null;
+  to?: string | null;
+  kinds?: BillEventKindDTO[] | null;
+  actorUserId?: number | null;
+  limit?: number;
+  /** Rows older than this id, for "load more". */
+  beforeId?: number | null;
+}
+
 export interface SecurityLogEntry {
   timestamp: number;
   event: string;
@@ -1276,6 +1312,8 @@ export interface ApiAdmin {
     range: 'daily' | 'weekly' | 'monthly';
   }): Promise<SalesTrendDTO>;
   getSecurityLog(limit?: number): Promise<SecurityLogEntry[]>;
+  /** Voids, discounts and corrections, newest first. Kept for good. */
+  listBillEvents(input?: BillEventQueryDTO): Promise<BillEventDTO[]>;
   /**
    * Aggregated business analytics for the Review tab. Computes KPIs, time-
    * series, top items, hour/weekday breakdowns, and per-waiter performance

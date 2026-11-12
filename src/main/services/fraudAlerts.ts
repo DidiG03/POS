@@ -29,6 +29,7 @@ export const SERVICE_REMOVAL_THRESHOLD = 3;
 export type VoidKind = 'VOID_ITEM' | 'VOID_TICKET';
 
 type Db = {
+  billEvent: { count: (args: object) => Promise<number> };
   notification: {
     count: (args: object) => Promise<number>;
     create: (args: object) => Promise<unknown>;
@@ -111,16 +112,15 @@ async function alertManyVoids(
 ): Promise<void> {
   const threshold =
     kind === 'VOID_TICKET' ? VOID_TICKET_THRESHOLD : VOID_ITEM_THRESHOLD;
-  // Every void leaves the actor an OTHER notice starting with this text
-  // (written by the void handlers of the till and of the LAN API).
-  const prefix = kind === 'VOID_TICKET' ? VOID_TICKET_PREFIX : VOID_ITEM_PREFIX;
-  const count = await db.notification
+  // Counted from the permanent record of voids (`billEvents.ts`). It used
+  // to be counted from the wording of notifications, which a change of
+  // text or language would have switched off without a sound.
+  const count = await db.billEvent
     .count({
       where: {
-        userId: actorUserId,
-        type: 'OTHER',
+        actorUserId,
+        kind,
         createdAt: { gte: new Date(nowMs - WINDOW_MINUTES * 60_000) },
-        message: { startsWith: prefix },
       },
     })
     .catch(() => 0);
@@ -173,7 +173,7 @@ async function alertVoidSoonAfterPayment(
 }
 
 /**
- * Call after a void was recorded (and its "Voided … on" notice written).
+ * Call after a void was recorded (and its bill event written).
  * Never throws: an alert must not fail the void.
  */
 export async function checkVoidForAlerts(
