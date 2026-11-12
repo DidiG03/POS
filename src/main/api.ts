@@ -153,6 +153,7 @@ import {
 } from './services/paymentSettle';
 import { findStaleBillPayment } from './services/staleBill';
 import { checkPaymentApproval } from './services/paymentApproval';
+import { stampPaymentForSession } from './services/paymentStamp';
 import { getTableTooltip, listPaidTablesForDay } from './services/tableTooltip';
 import {
   bumpKdsItem,
@@ -2976,7 +2977,12 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             settings as any,
             'lan',
           );
-          const payload = enforcedTotals.payload;
+          // The sale is credited to the signed-in user and dated by this
+          // till's clock (`paymentStamp.ts`).
+          const payload = await stampPaymentForSession(
+            enforcedTotals.payload,
+            auth?.userId,
+          );
 
           // Track last payment time per table + payment adjustment alerts.
           // Run before printing so it works for all printer modes — and

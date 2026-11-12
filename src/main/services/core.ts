@@ -140,11 +140,40 @@ function buildEnvDefaults() {
   } as any;
 }
 
+const SETTINGS_READ_ATTEMPTS = 3;
+const SETTINGS_READ_RETRY_MS = 150;
+
+/** The stored settings row (null on a fresh till). Throws when unreadable. */
+async function readSettingsRow(): Promise<{ valueJson?: unknown } | null> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= SETTINGS_READ_ATTEMPTS; attempt++) {
+    try {
+      return await prisma.syncState.findUnique({ where: { key: 'settings' } });
+    } catch (e) {
+      lastError = e;
+      if (attempt < SETTINGS_READ_ATTEMPTS) {
+        await new Promise((r) => setTimeout(r, SETTINGS_READ_RETRY_MS));
+      }
+    }
+  }
+  console.error('[settings] could not read the stored settings', lastError);
+  throw Object.assign(
+    new Error(
+      'The till could not read its settings. Nothing was changed; try again.',
+    ),
+    { code: 'SETTINGS_UNREADABLE', cause: lastError },
+  );
+}
+
+/** One settings save at a time: each merges into the one before it. */
+const settingsWrites = new KeyedAsyncMutex();
+
 async function loadSettingsFromDb(): Promise<any> {
   const envDefaults = buildEnvDefaults();
-  const row = await prisma.syncState
-    .findUnique({ where: { key: 'settings' } })
-    .catch(() => null);
+  // A failed read is an error, never "no settings". Answering it with
+  // the defaults ran the till with fiskalizimi off and no printers, and
+  // the next save wrote those defaults over the venue's real settings.
+  const row = await readSettingsRow();
   const stored = (row?.valueJson as any) || {};
   const merged = { ...envDefaults, ...stored };
   // ENABLE_ADMIN env wins so a misconfigured stored setting can't lock
@@ -206,7 +235,15 @@ export const coreServices = {
   },
 
   async updateSettings(input: any) {
-    const current = await this.readSettings();
+    return settingsWrites.runExclusive('settings', () =>
+      coreServices.applySettingsUpdate(input),
+    );
+  },
+  /** @internal The body of `updateSettings`; call that instead. */
+  async applySettingsUpdate(input: any): Promise<any> {
+    // Throws when the stored settings cannot be read, so a save never
+    // merges into defaults.
+    const current = await coreServices.readSettings();
     // Refused before anything is merged (`settingsValidation.ts`).
     const { assertSettingsPatch } = await import('./settingsValidation');
     const tokenEnvironment = assertSettingsPatch(input, current as any);

@@ -34,6 +34,7 @@ import { resolveHostIntent } from '@shared/tableIntent';
 import { coreServices } from './services/core';
 import { verifyManagerPin } from './services/managerPin';
 import { checkPaymentApproval } from './services/paymentApproval';
+import { stampPaymentForSession } from './services/paymentStamp';
 import { parseOptionalIsoDate } from './services/lanRequestGuards';
 import { repairLocalSchema } from './services/localSchemaRepair';
 import { syncTableAreasToDb } from './services/tableAreasSync';
@@ -2731,7 +2732,12 @@ ipcHandle('tickets:print', async (_e, input, ctx) => {
       settings as any,
       'ipc',
     );
-    let payload = enforcedTotals.payload;
+    // The sale is credited to the signed-in user and dated by this
+    // till's clock (`paymentStamp.ts`).
+    let payload = await stampPaymentForSession(
+      enforcedTotals.payload,
+      ctx?.session?.userId,
+    );
     const meta = (payload?.meta as any) || null;
     if (enforcedTotals.mismatch) {
       broadcastPrinterEvent({

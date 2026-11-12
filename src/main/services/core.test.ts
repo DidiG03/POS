@@ -109,3 +109,74 @@ describe('tableLockKey', () => {
     expect(events.indexOf('B:end')).toBeLessThan(events.indexOf('A:end'));
   });
 });
+
+describe('settings', () => {
+  it('does not fall back to defaults, or cache them, when the read fails', async () => {
+    vi.resetModules();
+    const findUnique = vi.fn();
+    const upsert = vi.fn(async () => ({}));
+    vi.doMock('@db/client', () => ({
+      prisma: { syncState: { findUnique, upsert } },
+    }));
+    const { coreServices: core } = await import('./core');
+
+    findUnique.mockRejectedValue(new Error('SQLITE_BUSY'));
+    await expect(core.readSettings()).rejects.toMatchObject({
+      code: 'SETTINGS_UNREADABLE',
+    });
+    // A save must not merge into defaults and overwrite the real row.
+    await expect(
+      core.updateSettings({ restaurantName: 'X' }),
+    ).rejects.toMatchObject({ code: 'SETTINGS_UNREADABLE' });
+    expect(upsert).not.toHaveBeenCalled();
+
+    // The next read goes back to the database and gets the real settings.
+    findUnique.mockReset();
+    findUnique.mockResolvedValue({
+      valueJson: { fiscal: { enabled: true }, restaurantName: 'Real' },
+    });
+    const settings = await core.readSettings();
+    expect(settings.fiscal.enabled).toBe(true);
+    expect(settings.restaurantName).toBe('Real');
+    vi.doUnmock('@db/client');
+  });
+
+  it('retries a read that fails once', async () => {
+    vi.resetModules();
+    const findUnique = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('SQLITE_BUSY'))
+      .mockResolvedValue({ valueJson: { restaurantName: 'Real' } });
+    vi.doMock('@db/client', () => ({
+      prisma: { syncState: { findUnique, upsert: vi.fn() } },
+    }));
+    const { coreServices: core } = await import('./core');
+    expect((await core.readSettings()).restaurantName).toBe('Real');
+    vi.doUnmock('@db/client');
+  });
+
+  it('applies two saves made at once, one after the other', async () => {
+    vi.resetModules();
+    let stored: any = { restaurantName: 'Real' };
+    vi.doMock('@db/client', () => ({
+      prisma: {
+        syncState: {
+          findUnique: vi.fn(async () => ({ valueJson: stored })),
+          upsert: vi.fn(async (args: any) => {
+            await new Promise((r) => setTimeout(r, 5));
+            stored = args.update.valueJson;
+            return {};
+          }),
+        },
+      },
+    }));
+    const { coreServices: core } = await import('./core');
+    await Promise.all([
+      core.updateSettings({ currency: 'ALL' }),
+      core.updateSettings({ restaurantName: 'New' }),
+    ]);
+    expect(stored.currency).toBe('ALL');
+    expect(stored.restaurantName).toBe('New');
+    vi.doUnmock('@db/client');
+  });
+});
