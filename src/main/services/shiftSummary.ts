@@ -5,6 +5,7 @@ import { prisma } from '@db/client';
 import { roundMoney } from '@shared/money';
 import { coreServices } from './core';
 import { cashCountResult } from '@shared/cashCount';
+import { saleMethodAmounts } from '@shared/paymentSplits';
 import { notifyAdminsAndActor } from './adminAlerts';
 import { logIgnored } from './logIgnored';
 import type { ShiftClosePrintSummary } from '../print';
@@ -39,7 +40,9 @@ export async function computeShiftPaidTotals(args: {
         closedAt: { gte: args.openedAt, lte: args.closedAt },
       } as any,
       orderBy: { closedAt: 'asc' },
-      include: { payments: { select: { method: true, amount: true } } },
+      include: {
+        payments: { select: { method: true, amount: true, metaJson: true } },
+      },
     })
     .catch(() => []);
 
@@ -55,8 +58,19 @@ export async function computeShiftPaidTotals(args: {
     revenueVat += vat;
     revenueGross += total;
     orders += 1;
+    // A cash-and-card sale counts each part under its own method, so the
+    // cash count compares against the cash actually taken.
     if (method) {
-      byMethod.set(method, (byMethod.get(method) || 0) + total);
+      for (const part of saleMethodAmounts(
+        method,
+        total,
+        (sale.payments?.[0]?.metaJson as any)?.splits,
+      )) {
+        byMethod.set(
+          part.method,
+          (byMethod.get(part.method) || 0) + part.amount,
+        );
+      }
     }
   }
 

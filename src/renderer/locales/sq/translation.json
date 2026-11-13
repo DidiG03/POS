@@ -1378,7 +1378,11 @@
     "sendSavedOnPhone": "Arka nuk u përgjigj. Porosia është ruajtur në këtë telefon dhe do dërgohet kur arka të kthehet.",
     "sendSavedOnPhoneTitle": "Do dërgohet kur të ketë lidhje",
     "requestPendingCount_one": "{{count}} e kërkuar",
-    "requestPendingCount_other": "{{count}} të kërkuara"
+    "requestPendingCount_other": "{{count}} të kërkuara",
+    "cashAndCard": "Para + kartë",
+    "splitCardAmount": "Shuma me kartë",
+    "splitCashPart": "Pjesa tjetër në para: {{amount}}",
+    "splitCardInvalid": "Shkruani një shumë me kartë mbi 0 dhe nën totalin."
   },
   "reservations": {
     "timeRequired": "Zgjidhni orën e rezervimit.",

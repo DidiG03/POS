@@ -493,3 +493,36 @@ describe('fiscalItemName — what the tax service accepts', () => {
     expect(/[\uD800-\uDBFF]$/.test(name)).toBe(false);
   });
 });
+
+describe('cash and card on one bill', () => {
+  it('files two payments that add up to the invoice', () => {
+    const draft = buildEasyPosCloudInvoiceDraft(
+      payload([{ name: 'Pizza', qty: 2, unitPrice: 1000 }], {
+        method: 'MIXED',
+        totalAfter: 2000,
+        splits: [
+          { method: 'CASH', amount: 800 },
+          { method: 'CARD', amount: 1200 },
+        ],
+      }),
+      settings,
+      { docId: 'inv-split' },
+    );
+    expect(draft.payment).toEqual([
+      { type: 'CASH', amount: 800 },
+      { type: 'CARD', amount: 1200 },
+    ]);
+  });
+
+  it('files one payment for a plain sale', () => {
+    const draft = buildEasyPosCloudInvoiceDraft(
+      payload([{ name: 'Pizza', qty: 1, unitPrice: 1000 }], {
+        method: 'CARD',
+        totalAfter: 1000,
+      }),
+      settings,
+      { docId: 'inv-card' },
+    );
+    expect(draft.payment).toEqual([{ type: 'CARD', amount: 1000 }]);
+  });
+});

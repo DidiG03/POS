@@ -603,6 +603,28 @@ describe('Z report failures and refunds', () => {
     expect(h.store.has('z:report:2')).toBe(false);
   });
 
+  it('counts a cash-and-card sale under both methods', async () => {
+    h.sales = [
+      {
+        ...sale(1, 600, 'MIXED'),
+        paymentSplits: [
+          { method: 'CASH', amount: 200 },
+          { method: 'CARD', amount: 400 },
+        ],
+      },
+    ];
+    h.payments = [{ orderId: 1, fiscalNivf: 'N1' }];
+    h.items = [{ orderId: 1, qty: 1, unitPrice: 600, vatRate: 0.2 }];
+    h.corrections = [];
+    const r = await issueZReport({ actorUserId: 1, print: noPrint });
+    if (!('report' in r)) throw new Error('expected a report');
+    expect(r.report.byMethod).toEqual([
+      { method: 'CARD', count: 1, amount: 400 },
+      { method: 'CASH', count: 1, amount: 200 },
+    ]);
+    expect(r.report.cash.sales).toBe(200);
+  });
+
   it('takes cash refunds off the cash expected in the drawer', async () => {
     h.corrections = [
       // Refund of a cash sale, possibly from an earlier day.

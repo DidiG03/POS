@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
+import { parseCountedCash } from '@shared/cashCount';
 import { SpinnerGlyph } from '../../components/SpinnerGlyph';
 import {
   IconCard,
@@ -74,6 +75,8 @@ export function PaymentCheckout({
   eurPerPerson,
   paymentMethod,
   onPaymentMethod,
+  splitCard = '',
+  onSplitCard,
   formatAmount,
   posCurrency,
   printReceipt,
@@ -120,8 +123,11 @@ export function PaymentCheckout({
   onSplitGuestCount: (next: number) => void;
   split: { guests: number; perPerson: number; lastPerson: number } | null;
   eurPerPerson: number | null;
-  paymentMethod: 'CASH' | 'CARD' | 'GIFT_CARD' | 'ROOM_CHARGE';
-  onPaymentMethod: (next: 'CASH' | 'CARD') => void;
+  paymentMethod: 'CASH' | 'CARD' | 'MIXED' | 'GIFT_CARD' | 'ROOM_CHARGE';
+  onPaymentMethod: (next: 'CASH' | 'CARD' | 'MIXED') => void;
+  /** Cash and card: the amount charged on the card, as typed. */
+  splitCard?: string;
+  onSplitCard?: (next: string) => void;
   formatAmount: (n: number) => string;
   posCurrency: string;
   printReceipt: boolean;
@@ -136,6 +142,13 @@ export function PaymentCheckout({
   notice?: ReactNode;
 }) {
   const { t } = useTranslation();
+  // Cash and card: the cash part is what the card does not cover.
+  const splitCash = (() => {
+    if (paymentMethod !== 'MIXED') return null;
+    const card = parseCountedCash(splitCard);
+    if (card == null || !(card > 0) || card >= totalDue) return null;
+    return Math.round((totalDue - card) * 100) / 100;
+  })();
   const [itemsOpen, setItemsOpen] = useState(false);
   const [discountOpen, setDiscountOpen] = useState(false);
 
@@ -294,7 +307,7 @@ export function PaymentCheckout({
 
           <section>
             <div className="pos-pay-label">{t('order.paymentMethods')}</div>
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-3 gap-2">
               <PayMethodTile
                 active={paymentMethod === 'CASH'}
                 label={t('order.cash')}
@@ -309,7 +322,40 @@ export function PaymentCheckout({
               >
                 <IconCard />
               </PayMethodTile>
+              {onSplitCard ? (
+                <PayMethodTile
+                  active={paymentMethod === 'MIXED'}
+                  label={t('order.cashAndCard')}
+                  onClick={() => onPaymentMethod('MIXED')}
+                >
+                  <span className="inline-flex items-center gap-0.5">
+                    <IconCash />
+                    <IconCard />
+                  </span>
+                </PayMethodTile>
+              ) : null}
             </div>
+            {paymentMethod === 'MIXED' && onSplitCard ? (
+              <div className="mt-3 space-y-1.5">
+                <label className="block text-[12px] text-[color:var(--pos-fg-muted)]">
+                  {t('order.splitCardAmount')}
+                  <input
+                    className="pos-input mt-1 w-full"
+                    inputMode="decimal"
+                    value={splitCard}
+                    placeholder="0.00"
+                    onChange={(e) => onSplitCard(e.target.value)}
+                  />
+                </label>
+                <div className="text-[13px]">
+                  {splitCash != null
+                    ? t('order.splitCashPart', {
+                        amount: formatAmount(splitCash),
+                      })
+                    : t('order.splitCardInvalid')}
+                </div>
+              </div>
+            ) : null}
           </section>
 
           {addMode !== 'seat' ? (
@@ -367,10 +413,11 @@ export function PaymentCheckout({
             </section>
           ) : null}
 
-          {paymentMethod === 'CASH' && totalDue > 0 ? (
+          {(paymentMethod === 'CASH' && totalDue > 0) ||
+          (paymentMethod === 'MIXED' && splitCash != null) ? (
             <CashChangeCalculator
               key={open ? 'open' : 'closed'}
-              totalDue={totalDue}
+              totalDue={paymentMethod === 'MIXED' ? splitCash! : totalDue}
               posCurrency={posCurrency}
               eurExchangeRate={eurExchangeRate}
               formatAmount={formatAmount}

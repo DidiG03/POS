@@ -4,6 +4,7 @@
  */
 
 import { prisma } from '@db/client';
+import { saleMethodAmounts } from '@shared/paymentSplits';
 import type {
   ReviewDTO,
   ReviewGranularity,
@@ -45,6 +46,8 @@ export type PaidSale = {
   vatAmount: number;
   total: number;
   paymentMethod: 'CASH' | 'CARD' | 'MIXED';
+  /** Cash and card parts of a MIXED sale (`@shared/paymentSplits`). */
+  paymentSplits?: Array<{ method: string; amount: number }>;
   /** False for a partial seat payment; covers count on the closing pay. */
   closeTable: boolean;
   items: PaidSaleLine[];
@@ -96,6 +99,9 @@ export function paidSaleFromOrderRow(row: any): PaidSale {
     vatAmount: num(row?.vatAmount),
     total: num(row?.total),
     paymentMethod: normalizePaymentMethod(row?.payments?.[0]?.method),
+    ...(Array.isArray((row?.payments?.[0]?.metaJson as any)?.splits)
+      ? { paymentSplits: (row.payments[0].metaJson as any).splits }
+      : {}),
     closeTable: saleClosesTable(meta),
     items: items.map((it: any) => ({
       name: String(it?.name || 'Item'),
@@ -197,7 +203,9 @@ async function queryPaidOrderRows(
        CASE WHEN json_valid(p."metaJson")
          THEN json_type(p."metaJson", '$.reprint') END AS "metaReprint",
        CASE WHEN json_valid(p."metaJson")
-         THEN json_type(p."metaJson", '$.closeTable') END AS "metaCloseTable"
+         THEN json_type(p."metaJson", '$.closeTable') END AS "metaCloseTable",
+       CASE WHEN json_valid(p."metaJson")
+         THEN json_extract(p."metaJson", '$.splits') END AS "metaSplits"
      FROM "Order" o
      LEFT JOIN "Payment" p ON p."id" = (
        SELECT p2."id" FROM "Payment" p2 WHERE p2."orderId" = o."id"
@@ -231,6 +239,16 @@ async function queryPaidOrderRows(
     if (o.metaKind != null) meta.kind = String(o.metaKind);
     if (o.metaReprint === 'true') meta.reprint = true;
     if (o.metaCloseTable === 'false') meta.closeTable = false;
+    if (o.metaSplits != null) {
+      try {
+        meta.splits =
+          typeof o.metaSplits === 'string'
+            ? JSON.parse(o.metaSplits)
+            : o.metaSplits;
+      } catch {
+        // an unreadable split counts the sale under its own method
+      }
+    }
     return {
       id,
       userId: o.userId == null ? null : Number(o.userId),
@@ -529,9 +547,20 @@ export function summarizePaidSales(
     orders += 1;
     ticketTotals.push(rowGross);
 
-    const method = sale.paymentMethod;
-    methodAgg[method].orders += 1;
-    methodAgg[method].revenue += rowGross;
+    // A cash-and-card sale counts its cash part as cash and its card part
+    // as card (`@shared/paymentSplits`).
+    for (const part of saleMethodAmounts(
+      sale.paymentMethod,
+      rowGross,
+      sale.paymentSplits,
+    )) {
+      const m = (part.method in methodAgg ? part.method : 'MIXED') as
+        | 'CASH'
+        | 'CARD'
+        | 'MIXED';
+      methodAgg[m].orders += 1;
+      methodAgg[m].revenue += part.amount;
+    }
 
     const areaName = String(sale.area || '').trim();
     const area = areaAgg.get(areaName) || {

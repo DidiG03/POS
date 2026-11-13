@@ -2,6 +2,7 @@ import type { SettingsDTO } from '@shared/ipc';
 import type { TicketPrintPayload } from '../../print';
 import { operatorCodeFor, fiscalConfig } from './config';
 import { mapPaymentMethod } from './paymentMethod';
+import { saleMethodAmounts } from '@shared/paymentSplits';
 import { assertVatCode } from './vatConfig';
 import { buildCurrency } from './buildInvoice';
 import { assertValidDocId } from './docId';
@@ -430,7 +431,37 @@ function buildPaymentArray(
     amount = amountPaid;
   }
 
+  const split = invoiceSplit(meta, amount, settings);
+  if (split) return split;
   return [{ type: method, amount: roundMoney(amount) }];
+}
+
+/**
+ * A cash-and-card payment as two invoice payments (`@shared/paymentSplits`).
+ * `amount` is what the invoice adds up to, in the currency it is filed in
+ * (lekë on a euro till), so the card part is carried over in proportion
+ * and the cash part takes the rest. Null when the payment is not a split.
+ */
+function invoiceSplit(
+  meta: any,
+  amount: number,
+  settings?: SettingsDTO,
+): Array<{ type: string; amount: number }> | null {
+  if (String(meta?.method || '').toUpperCase() !== 'MIXED') return null;
+  const total = Number(meta?.totalAfter);
+  const parts = saleMethodAmounts('MIXED', total, meta?.splits);
+  const card = parts.find((p) => p.method === 'CARD');
+  if (!card || parts.length < 2 || !(total > 0) || !(amount > 0)) return null;
+  const cardAmount =
+    Math.abs(amount - total) < 0.005
+      ? card.amount
+      : roundMoney((amount * card.amount) / total);
+  const cashAmount = roundMoney(amount - cardAmount);
+  if (!(cashAmount > 0) || !(cardAmount > 0)) return null;
+  return [
+    { type: mapPaymentMethod('CASH', settings), amount: cashAmount },
+    { type: mapPaymentMethod('CARD', settings), amount: cardAmount },
+  ];
 }
 
 /**
@@ -900,8 +931,13 @@ export function buildEasyPosInvoiceDraft(
     articles = reconciled.articles;
     invoiceRebate = reconciled.invoiceRebate;
   }
-  const payment =
+  const split =
     Number.isFinite(amountDue) && amountDue > 0
+      ? invoiceSplit(meta, amountDue, settings)
+      : null;
+  const payment = split
+    ? split
+    : Number.isFinite(amountDue) && amountDue > 0
       ? { type: method, amount: roundMoney(amountDue) }
       : { type: method };
 

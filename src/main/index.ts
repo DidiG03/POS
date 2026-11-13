@@ -35,6 +35,7 @@ import { coreServices } from './services/core';
 import { verifyManagerPin } from './services/managerPin';
 import { checkPaymentApproval } from './services/paymentApproval';
 import { checkPaymentLines } from './services/paymentLines';
+import { INVALID_SPLIT, normalizePaymentSplit } from '@shared/paymentSplits';
 import {
   CASH_COUNT_REQUIRED,
   cashCountAtClockOut,
@@ -2967,6 +2968,18 @@ ipcHandle('tickets:print', async (_e, input, ctx) => {
       });
       if (approvalRefused) return approvalRefused;
       if (meta) delete meta.managerApprovalToken;
+      // Cash and card: exact against the till's total
+      // (`@shared/paymentSplits`).
+      const splitOk = normalizePaymentSplit(payload.meta || {});
+      if (!splitOk.ok) {
+        return {
+          ok: false,
+          code: INVALID_SPLIT,
+          error: splitOk.error,
+          permanent: true,
+        } as any;
+      }
+      payload = { ...payload, meta: splitOk.meta };
       // Key present, every line on the menu or the bill, and a seat's
       // share only for what the bill has (`paymentLines.ts`).
       const linesRefused = await checkPaymentLines({

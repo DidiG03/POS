@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  printedPaymentMethod,
   printCopy,
   printLangFromSettings,
   printPaymentMethod,
@@ -38,5 +39,20 @@ describe('printCopy', () => {
     expect(en.waiter).toBe('Waiter');
     expect(en.thankYou).toBe('Thank you!');
     expect(printPaymentMethod('en', 'CASH')).toBe('CASH');
+  });
+});
+
+describe('printedPaymentMethod', () => {
+  it('names both parts of a cash-and-card payment', () => {
+    expect(
+      printedPaymentMethod('sq', {
+        method: 'MIXED',
+        splits: [
+          { method: 'CASH', amount: 17.5 },
+          { method: 'CARD', amount: 30 },
+        ],
+      }),
+    ).toBe('PARA 17.50 + KARTË 30.00');
+    expect(printedPaymentMethod('en', { method: 'CARD' })).toBe('CARD');
   });
 });

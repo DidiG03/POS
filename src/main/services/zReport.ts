@@ -16,6 +16,7 @@
 import { prisma } from '@db/client';
 import { KeyedAsyncMutex } from '@shared/asyncMutex';
 import { roundMoney } from '@shared/money';
+import { saleMethodAmounts } from '@shared/paymentSplits';
 import { effectiveVatRate } from '@shared/ticketRevenue';
 import { eurExchangeRateFromSettings } from '@shared/paymentDisplay';
 import { isVatEnabledFromSettings } from '@shared/vatFromFiscal';
@@ -283,10 +284,18 @@ async function computeZReportFigures(input: {
   for (const s of sales) {
     totals.vat += cents(vatEnabled ? s.vatAmount : 0);
     totals.gross += cents(s.total);
-    const m = methods.get(s.paymentMethod) ?? { count: 0, amount: 0 };
-    m.count += 1;
-    m.amount += cents(s.total);
-    methods.set(s.paymentMethod, m);
+    // A cash-and-card sale: its cash part is cash in the drawer, its card
+    // part is card (`@shared/paymentSplits`).
+    for (const part of saleMethodAmounts(
+      s.paymentMethod,
+      s.total,
+      s.paymentSplits,
+    )) {
+      const m = methods.get(part.method) ?? { count: 0, amount: 0 };
+      m.count += 1;
+      m.amount += cents(part.amount);
+      methods.set(part.method, m);
+    }
   }
 
   const orderIds = sales

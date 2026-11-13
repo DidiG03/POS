@@ -210,6 +210,26 @@ export function printStaffLabel(lang: PrintLang, diningFloor: boolean): string {
   return diningFloor ? copy.waiter : copy.cashier;
 }
 
+/**
+ * The method line of a receipt. A cash-and-card payment names both parts
+ * ("PARA 17.50 + KARTË 30.00") instead of just "mixed".
+ */
+export function printedPaymentMethod(lang: PrintLang, meta: unknown): string {
+  const m = (meta || {}) as Record<string, any>;
+  const raw = String(m.method || m.paymentMethod || '');
+  if (raw.trim().toUpperCase() === 'MIXED' && Array.isArray(m.splits)) {
+    const parts = m.splits
+      .map((s: any) => {
+        const amount = Number(s?.amount);
+        if (!Number.isFinite(amount) || amount <= 0) return null;
+        return `${printPaymentMethod(lang, String(s?.method || ''))} ${amount.toFixed(2)}`;
+      })
+      .filter(Boolean);
+    if (parts.length) return parts.join(' + ');
+  }
+  return printPaymentMethod(lang, raw);
+}
+
 export function printPaymentMethod(lang: PrintLang, raw: string): string {
   const key = String(raw || '')
     .trim()

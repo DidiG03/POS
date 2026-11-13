@@ -1378,7 +1378,11 @@
     "sendSavedOnPhone": "The till did not answer. The order is saved on this phone and will send when the till is back.",
     "sendSavedOnPhoneTitle": "Will send when online",
     "requestPendingCount_one": "{{count}} requested",
-    "requestPendingCount_other": "{{count}} requested"
+    "requestPendingCount_other": "{{count}} requested",
+    "cashAndCard": "Cash + card",
+    "splitCardAmount": "Amount on card",
+    "splitCashPart": "Rest in cash: {{amount}}",
+    "splitCardInvalid": "Enter a card amount above 0 and below the total."
   },
   "reservations": {
     "timeRequired": "Choose a time for the reservation.",

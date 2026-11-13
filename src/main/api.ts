@@ -154,6 +154,7 @@ import {
 import { findStaleBillPayment } from './services/staleBill';
 import { checkPaymentApproval } from './services/paymentApproval';
 import { checkPaymentLines } from './services/paymentLines';
+import { INVALID_SPLIT, normalizePaymentSplit } from '@shared/paymentSplits';
 import {
   CASH_COUNT_REQUIRED,
   cashCountAtClockOut,
@@ -3137,6 +3138,23 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
               return send(res, 409, approvalRefused, corsOrigin);
             }
             if (payload?.meta) delete payload.meta.managerApprovalToken;
+            // Cash and card: exact against the till's total
+            // (`@shared/paymentSplits`).
+            const splitOk = normalizePaymentSplit(payload.meta || {});
+            if (!splitOk.ok) {
+              return send(
+                res,
+                409,
+                {
+                  ok: false,
+                  code: INVALID_SPLIT,
+                  error: splitOk.error,
+                  permanent: true,
+                },
+                corsOrigin,
+              );
+            }
+            payload.meta = splitOk.meta;
             // Key present, every line on the menu or the bill, and a
             // seat's share only for what the bill has (`paymentLines.ts`).
             const linesRefused = await checkPaymentLines({

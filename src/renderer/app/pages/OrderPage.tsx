@@ -47,6 +47,7 @@ import { ORDER_ADD_MODES } from '@shared/orderAddMode';
 import { useTableStatus } from '../../stores/tableStatus';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import { parseCountedCash } from '@shared/cashCount';
 import { useSessionStore } from '../../stores/session';
 import { logTicket, printTicket } from '../../api';
 import { retireQueuedTableOpen, tryOrQueue } from '../../utils/offlineQueue';
@@ -684,8 +685,10 @@ export default function OrderPage() {
   );
   const [showPayment, setShowPayment] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState<
-    'CASH' | 'CARD' | 'GIFT_CARD' | 'ROOM_CHARGE'
+    'CASH' | 'CARD' | 'MIXED' | 'GIFT_CARD' | 'ROOM_CHARGE'
   >('CASH');
+  /** Cash and card: the card part, as typed (`@shared/paymentSplits`). */
+  const [splitCard, setSplitCard] = useState('');
   const [posCurrency, setPosCurrency] = useState<string>('EUR');
   const [eurExchangeRate, setEurExchangeRate] = useState<number | null>(null);
   const [splitGuestCount, setSplitGuestCount] = useState(1);
@@ -1471,6 +1474,7 @@ export default function OrderPage() {
 
   const openPaymentUi = useCallback(() => {
     setPaymentMethod('CASH');
+    setSplitCard('');
     setDiscountType('NONE');
     setDiscountValue('');
     setDiscountReason('');
@@ -4185,10 +4189,26 @@ export default function OrderPage() {
           onDiscountReason={setDiscountReason}
           onSplitGuestCount={setSplitGuestCount}
           onPaymentMethod={(next) => setPaymentMethod(next)}
+          splitCard={splitCard}
+          onSplitCard={setSplitCard}
           onTogglePrint={() => setPrintReceipt((v) => !v)}
           onConfirm={async () => {
             if (busyAction != null) return;
             if (!connectionOk) return;
+            // Cash and card: the card part must leave something in cash.
+            const splitCardAmount =
+              paymentMethod === 'MIXED' ? parseCountedCash(splitCard) : null;
+            if (
+              paymentMethod === 'MIXED' &&
+              (splitCardAmount == null ||
+                !(splitCardAmount > 0) ||
+                splitCardAmount >= totalDue)
+            ) {
+              toast.error(t('order.splitCardInvalid'), {
+                title: t('order.paymentBlocked'),
+              });
+              return;
+            }
             setBusyAction('pay');
             await ensureStoreTillOpen();
             // Close the table only after the host accepted the
@@ -4307,6 +4327,20 @@ export default function OrderPage() {
                       kind: 'PAYMENT',
                       userId: user?.id ?? null,
                       method: paymentMethod,
+                      ...(paymentMethod === 'MIXED' && splitCardAmount != null
+                        ? {
+                            splits: [
+                              {
+                                method: 'CASH',
+                                amount:
+                                  Math.round(
+                                    (totalDue - splitCardAmount) * 100,
+                                  ) / 100,
+                              },
+                              { method: 'CARD', amount: splitCardAmount },
+                            ],
+                          }
+                        : {}),
                       paidAt: new Date().toISOString(),
                       amountPaid: Number(amountPaid),
                       vatEnabled,

@@ -13,6 +13,7 @@ import {
   printCopyFromSettings,
   printLangFromSettings,
   printPaymentMethod,
+  printedPaymentMethod,
   printStaffLabel,
 } from '@shared/printCopy';
 import {
@@ -1111,10 +1112,7 @@ export function buildEscposTicket(
   // cancellation invoice, which carries its own fiscal codes and QR).
   const correction = kind === 'CORRECTION';
   if (kind === 'PAYMENT' || correction) {
-    const method = printPaymentMethod(
-      lang,
-      String(meta?.method || meta?.paymentMethod || ''),
-    );
+    const method = printedPaymentMethod(lang, meta);
     const approvedBy = String(meta?.managerApprovedByName || '').trim();
     lines.push(escposText(`${layout.sep}\n`));
     lines.push(cmdAlign('center'));
@@ -1371,10 +1369,7 @@ export function buildHtmlReceipt(
               '',
             )}${fiscalQr ? `${htmlFiscalQr(fiscalQr)}<div class="small"><a href="${safe(fiscalQr)}">${safe(fiscalQr)}</a></div>` : ''}`
         : '');
-  const payMethod = printPaymentMethod(
-    lang,
-    String(meta?.method || meta?.paymentMethod || ''),
-  );
+  const payMethod = printedPaymentMethod(lang, meta);
   // A corrective / cancellation slip carries its fiscal block too: its
   // title, the invoice it corrects, its NIVF/NSLF and its QR. On system
   // printers it used to be dropped, so the slip had no fiscal identity and
