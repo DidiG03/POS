@@ -33,8 +33,12 @@ import {
 } from './menuPriceHistory';
 import { getTableSessionStartedAt } from './tableSession';
 
-/** Longest a sitting can run: stale tables are auto-voided after 12h. */
-const SITTING_LOOKBACK_MS = 13 * 60 * 60 * 1000;
+/**
+ * How far back to look for a sitting with no recorded start. Tables are no
+ * longer voided automatically by default, so this covers the longest
+ * overdue-table limit a venue can set (`overdueTables.ts`).
+ */
+const SITTING_LOOKBACK_MS = 73 * 60 * 60 * 1000;
 
 const PRICE_TOLERANCE = 0.005;
 const VAT_TOLERANCE = 0.0005;

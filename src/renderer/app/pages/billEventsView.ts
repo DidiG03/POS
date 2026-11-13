@@ -35,7 +35,8 @@ export type KindFilter =
   | 'DISCOUNT'
   | 'SERVICE_CHARGE_REMOVED'
   | 'PRICE_CORRECTED'
-  | 'AUTO_VOID';
+  | 'AUTO_VOID'
+  | 'BILL_PRINTED';
 
 export const KIND_FILTERS: Record<KindFilter, BillEventKindDTO[] | null> = {
   ALL: null,
@@ -44,6 +45,7 @@ export const KIND_FILTERS: Record<KindFilter, BillEventKindDTO[] | null> = {
   SERVICE_CHARGE_REMOVED: ['SERVICE_CHARGE_REMOVED'],
   PRICE_CORRECTED: ['PRICE_CORRECTED'],
   AUTO_VOID: ['AUTO_VOID'],
+  BILL_PRINTED: ['BILL_PRINTED'],
 };
 
 export function billEventsTotals(rows: BillEventDTO[]): {
@@ -51,7 +53,11 @@ export function billEventsTotals(rows: BillEventDTO[]): {
   amount: number;
 } {
   let amount = 0;
-  for (const r of rows) if (r.amount != null) amount += Number(r.amount) || 0;
+  for (const r of rows) {
+    // A bill printed is counted, but nothing came off it.
+    if (r.kind === 'BILL_PRINTED') continue;
+    if (r.amount != null) amount += Number(r.amount) || 0;
+  }
   return { count: rows.length, amount: Math.round(amount * 100) / 100 };
 }
 

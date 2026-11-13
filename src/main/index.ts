@@ -160,6 +160,7 @@ import { normalizePin } from '@shared/staffPin';
 import { IpcAuthorizationError, ipcHandle } from './services/ipcGuard';
 import { authorizeCreateUser } from './services/createUserAuth';
 import {
+  notifyAdminsAndActor,
   notifyPaymentDiscount,
   reportAuditWriteFailure,
 } from './services/adminAlerts';
@@ -354,6 +355,16 @@ import {
   type CurrentSitting,
 } from './services/tableSession';
 import { notifyAutoVoidedTable } from './services/autoVoidAlert';
+import {
+  alreadyReminded,
+  OVERDUE_REMINDED_KEY,
+  overdueTableMessage,
+  overdueTables,
+  overdueTablesConfig,
+  pruneReminded,
+  unpaidAmount,
+} from './services/overdueTables';
+import { checkBillSlip } from './services/billSlip';
 import {
   auditFiscalToggle,
   fiscalEnabledOf,
@@ -763,23 +774,82 @@ let autoCloseShiftsRunning = false;
 
 let autoNoShowReservationsTimer: NodeJS.Timeout | null = null;
 let autoNoShowReservationsRunning = false;
+/**
+ * Tables open longer than the venue's limit (`overdueTables.ts`). By
+ * default the admins and the waiter are told once per sitting and the
+ * table is left for a person to close or void; a venue can instead keep
+ * the old automatic void, which is then recorded as such.
+ */
 function startAutoVoidStaleTicketsLoop() {
   if (autoVoidTimer) return;
-  // Auto-void any *open* tables whose session exceeds 12 hours.
-  // This helps avoid "ghost" open tickets after long downtime and keeps KDS clean.
-  const cutoffMs = 12 * 60 * 60 * 1000;
   const intervalMs = 60 * 60 * 1000; // hourly
-  const reason = 'Auto-void: ticket exceeded 12 hours';
+
+  const remindOnce = async (
+    overdue: ReturnType<typeof overdueTables>,
+    occupied: ReturnType<typeof overdueTables>,
+    hours: number,
+  ) => {
+    const row = await prisma.syncState
+      .findUnique({ where: { key: OVERDUE_REMINDED_KEY } })
+      .catch(() => null);
+    const reminded = pruneReminded(
+      ((row?.valueJson as any) || {}) as Record<string, string>,
+      occupied,
+    );
+    const settings = await coreServices.readSettings().catch(() => null);
+    const currency = String((settings as any)?.currency || '');
+    let changed = false;
+    for (const t of overdue) {
+      if (alreadyReminded(reminded, t)) continue;
+      const last = (await findLatestTicketLogForCurrentSession(
+        t.area,
+        t.label,
+      ).catch(() => null)) as any;
+      const message = overdueTableMessage({
+        area: t.area,
+        label: t.label,
+        hours,
+        amount: unpaidAmount(last?.itemsJson),
+        currency,
+      });
+      await notifyAdminsAndActor({
+        message,
+        actorUserId: Number(last?.userId || 0) || undefined,
+      });
+      reminded[`${t.area}:${t.label}`] = t.openedAt.toISOString();
+      changed = true;
+    }
+    if (
+      changed ||
+      Object.keys(reminded).length !==
+        Object.keys((row?.valueJson as any) || {}).length
+    ) {
+      await prisma.syncState
+        .upsert({
+          where: { key: OVERDUE_REMINDED_KEY },
+          create: { key: OVERDUE_REMINDED_KEY, valueJson: reminded },
+          update: { valueJson: reminded },
+        })
+        .catch(() => null);
+    }
+  };
 
   const runOnce = async () => {
     if (autoVoidRunning) return; // overlap guard
     autoVoidRunning = true;
     try {
       const now = Date.now();
+      const config = overdueTablesConfig(
+        await coreServices.readSettings().catch(() => null),
+      );
+      const reason = `Auto-void: ticket exceeded ${config.hours} hours`;
       const occupied = await listOccupiedTables().catch(() => []);
-      const staleKeys = occupied
-        .filter((t) => now - t.openedAt.getTime() > cutoffMs)
-        .map((t) => `${t.area}:${t.label}`);
+      const overdue = overdueTables(occupied, config.hours, now);
+      if (config.action !== 'void') {
+        if (overdue.length) await remindOnce(overdue, occupied, config.hours);
+        return;
+      }
+      const staleKeys = overdue.map((t) => `${t.area}:${t.label}`);
 
       const keyClosedOverride = 'tables:closedOverride';
       const closedRow = await prisma.syncState
@@ -837,7 +907,7 @@ function startAutoVoidStaleTicketsLoop() {
                 data: { status: 'REJECTED' as any, decidedAt: nowDt },
               } as any)
               .catch(() => null);
-            const msg = `Auto-cancelled add-item requests on ${area} ${tableLabel}: ticket exceeded 12 hours`;
+            const msg = `Auto-cancelled add-item requests on ${area} ${tableLabel}: ticket exceeded ${config.hours} hours`;
             const usersToNotify = new Set<number>();
             for (const r of rows as any[]) {
               usersToNotify.add(Number(r.requesterId));
@@ -955,7 +1025,7 @@ function startAutoVoidStaleTicketsLoop() {
           });
         })().catch(() => false);
         if (!alerted && actorUserId) {
-          const msg = `Auto-voided ticket on ${area} ${tableLabel}: exceeded 12 hours`;
+          const msg = `Auto-voided ticket on ${area} ${tableLabel}: exceeded ${config.hours} hours`;
           await prisma.notification
             .create({
               data: { userId: actorUserId, type: 'OTHER' as any, message: msg },
@@ -2725,6 +2795,33 @@ ipcHandle('tickets:print', async (_e, input, ctx) => {
       return false;
     }
     if (slip.kind === 'print') items = slip.items;
+    // A bill prints the table's own unpaid lines, or nothing; only known
+    // kinds print at all (`billSlip.ts`).
+    const bill = await checkBillSlip({
+      area,
+      tableLabel,
+      meta: (input as any)?.meta,
+      items,
+    });
+    if (bill.kind === 'refuse') {
+      console.warn(`[print] ${area} ${tableLabel}: ${bill.error}`);
+      return false;
+    }
+    if (bill.kind === 'print') {
+      items = bill.items as any[];
+      await recordBillEvent({
+        kind: 'BILL_PRINTED',
+        area,
+        tableLabel,
+        actorUserId:
+          Number(ctx?.session?.userId || 0) ||
+          Number((input as any)?.meta?.userId || 0) ||
+          null,
+        amount: bill.amount,
+        source: 'till',
+        details: { lines: billEventLines(bill.items) },
+      });
+    }
   }
   const kindHint = String((input as any)?.meta?.kind || '').toUpperCase();
 

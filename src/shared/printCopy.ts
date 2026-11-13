@@ -41,6 +41,8 @@ type PrintCopy = {
   correctsInvoice: string;
   /** Top of a receipt printed again: not a new sale. */
   receiptCopyBanner: string;
+  /** Top of a bill printed before payment: not a receipt, not an invoice. */
+  billBanner: string;
   method: string;
   approved: string;
   note: string;
@@ -90,6 +92,7 @@ const EN: PrintCopy = {
   correctsInvoice: 'Corrects NSLF',
   // Bilingual on purpose: the tax inspector reads Albanian, guests may not.
   receiptCopyBanner: '*** KOPJE / COPY ***',
+  billBanner: 'BILL - NOT A FISCAL RECEIPT',
   method: 'Method',
   approved: 'Approved',
   note: 'Note',
@@ -138,6 +141,7 @@ const SQ: PrintCopy = {
     kind === 'CANCEL' ? 'FATURË ANULIMI' : 'FATURË KORRIGJUESE',
   correctsInvoice: 'Korrigjon NSLF',
   receiptCopyBanner: '*** KOPJE / COPY ***',
+  billBanner: 'LLOGARI - NUK ESHTE FATURE TATIMORE',
   method: 'Metoda',
   approved: 'Aprovuar',
   note: 'Shënim',

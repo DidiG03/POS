@@ -8,6 +8,7 @@
  * refused by the live service, or worse, the other way round). These are
  * checked here, when saved, with a message the owner can act on.
  */
+import { overdueTablesProblem } from './overdueTables';
 import {
   fiscalEnvironmentOf,
   operatorCodesProblem,
@@ -225,6 +226,11 @@ export function assertSettingsPatch(
 
   if (has(input, 'tableAreas')) {
     const problem = tableAreasProblem(input.tableAreas);
+    if (problem) refuse(problem);
+  }
+
+  if (input.preferences && has(input.preferences, 'overdueTables')) {
+    const problem = overdueTablesProblem(input.preferences.overdueTables);
     if (problem) refuse(problem);
   }
 

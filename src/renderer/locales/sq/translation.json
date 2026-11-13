@@ -349,7 +349,8 @@
       "DISCOUNT": "Zbritje",
       "SERVICE_CHARGE_REMOVED": "Shërbimi i hequr",
       "PRICE_CORRECTED": "Çmime të korrigjuara",
-      "AUTO_VOID": "Anulime automatike"
+      "AUTO_VOID": "Anulime automatike",
+      "BILL_PRINTED": "Llogari të printuara"
     },
     "kind": {
       "VOID_ITEM": "Artikull i anuluar",
@@ -357,7 +358,8 @@
       "AUTO_VOID": "Tavolinë e anuluar automatikisht",
       "DISCOUNT": "Zbritje",
       "SERVICE_CHARGE_REMOVED": "Shërbimi i hequr",
-      "PRICE_CORRECTED": "Çmim i korrigjuar nga arka"
+      "PRICE_CORRECTED": "Çmim i korrigjuar nga arka",
+      "BILL_PRINTED": "Llogari e printuar para pagesës"
     }
   },
   "login": {
@@ -627,7 +629,16 @@
     "serviceChargeEnable": "Aktivizo shërbimin",
     "fixedAmount": "Fiks",
     "savePreferences": "Ruaj preferencat",
-    "saveFailed": "Preferencat nuk u ruajtën."
+    "saveFailed": "Preferencat nuk u ruajtën.",
+    "hours6": "6 orë",
+    "hours48": "48 orë",
+    "overdueTitle": "Tavolina të lëna hapur",
+    "overdueHelp": "Çfarë bën arka kur një tavolinë ka qëndruar hapur më gjatë se kaq. Kontrolli bëhet çdo orë.",
+    "overdueActionLabel": "Çfarë të bëjë",
+    "overdueRemind": "Njofto adminët",
+    "overdueVoid": "Anulo automatikisht",
+    "overdueRemindHelp": "Adminët dhe kamarieri i tavolinës njoftohen një herë për çdo ulje. Tavolina mbetet hapur derisa dikush ta mbyllë, të marrë pagesën ose ta anulojë me arsye.",
+    "overdueVoidHelp": "Artikujt e papaguar anulohen dhe tavolina mbyllet pa miratim. Çdo anulim automatik ruhet te Anulime & zbritje."
   },
   "settingsNav": {
     "groupVenue": "Salla",

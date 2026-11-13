@@ -154,6 +154,7 @@ import {
 import { findStaleBillPayment } from './services/staleBill';
 import { checkPaymentApproval } from './services/paymentApproval';
 import { stampPaymentForSession } from './services/paymentStamp';
+import { checkBillSlip, UNKNOWN_SLIP_KIND } from './services/billSlip';
 import {
   billEventLines,
   billEventLinesAmount,
@@ -2983,6 +2984,38 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           );
         }
         if (slip.kind === 'print') requested.items = slip.items;
+        // A bill prints the table's own unpaid lines, or nothing; only
+        // known kinds print at all (`billSlip.ts`).
+        const bill = await checkBillSlip({
+          area: requested.area,
+          tableLabel: requested.tableLabel,
+          meta: requested.meta,
+          items: requested.items,
+        });
+        if (bill.kind === 'refuse') {
+          return send(
+            res,
+            bill.code === UNKNOWN_SLIP_KIND ? 400 : 409,
+            { ok: false, code: bill.code, error: bill.error, permanent: true },
+            corsOrigin,
+          );
+        }
+        if (bill.kind === 'print') {
+          requested.items = bill.items;
+          requested.meta = { ...(requested.meta || {}), kind: 'TICKET' };
+          await recordBillEvent({
+            kind: 'BILL_PRINTED',
+            area: requested.area,
+            tableLabel: requested.tableLabel,
+            actorUserId:
+              Number(auth?.userId || 0) ||
+              Number(requested.meta?.userId || 0) ||
+              null,
+            amount: bill.amount,
+            source: 'phone',
+            details: { lines: billEventLines(bill.items) },
+          });
+        }
         const payKindHint = String(requested?.meta?.kind || '').toUpperCase();
         const runLanPrint = async () => {
           const settings = await coreServices.readSettings();

@@ -720,6 +720,12 @@ function PreferencesSettings() {
     useState(true);
   const [autoCloseShiftEnabled, setAutoCloseShiftEnabled] = useState(false);
   const [autoCloseShiftHours, setAutoCloseShiftHours] = useState<12 | 24>(12);
+  const [overdueTablesHours, setOverdueTablesHours] = useState<
+    6 | 12 | 24 | 48
+  >(12);
+  const [overdueTablesAction, setOverdueTablesAction] = useState<
+    'remind' | 'void'
+  >('remind');
   const [captureClockInOut, setCaptureClockInOut] = useState(true);
   const [blockShiftReopenEnabled, setBlockShiftReopenEnabled] = useState(false);
   const [blockShiftReopenHours, setBlockShiftReopenHours] = useState<
@@ -748,6 +754,8 @@ function PreferencesSettings() {
     blockShiftReopenHours: 2 | 4 | 8 | 12 | 24;
     autoCloseShiftEnabled: boolean;
     autoCloseShiftHours: 12 | 24;
+    overdueTablesHours: 6 | 12 | 24 | 48;
+    overdueTablesAction: 'remind' | 'void';
     reservationNoShowEnabled: boolean;
     reservationNoShowMinutes: number;
   };
@@ -768,6 +776,8 @@ function PreferencesSettings() {
     blockShiftReopenHours: 12,
     autoCloseShiftEnabled: false,
     autoCloseShiftHours: 12,
+    overdueTablesHours: 12,
+    overdueTablesAction: 'remind',
     reservationNoShowEnabled: false,
     reservationNoShowMinutes: 20,
   });
@@ -794,6 +804,8 @@ function PreferencesSettings() {
     blockShiftReopenHours,
     autoCloseShiftEnabled,
     autoCloseShiftHours,
+    overdueTablesHours,
+    overdueTablesAction,
     reservationNoShowEnabled,
     reservationNoShowMinutes,
   };
@@ -862,6 +874,10 @@ function PreferencesSettings() {
           autoCloseShift: {
             enabled: next.autoCloseShiftEnabled,
             hours: next.autoCloseShiftHours,
+          },
+          overdueTables: {
+            hours: next.overdueTablesHours,
+            action: next.overdueTablesAction,
           },
           reservationAutoNoShow: {
             enabled: next.reservationNoShowEnabled,
@@ -997,6 +1013,10 @@ function PreferencesSettings() {
         setAutoCloseShiftEnabled(Boolean(acs.enabled));
         const h = Number(acs.hours);
         setAutoCloseShiftHours(h === 24 ? 24 : 12);
+        const ot = (s as any)?.preferences?.overdueTables || {};
+        const oh = Number(ot.hours);
+        setOverdueTablesHours(oh === 6 || oh === 24 || oh === 48 ? oh : 12);
+        setOverdueTablesAction(ot.action === 'void' ? 'void' : 'remind');
         const rns = (s as any)?.preferences?.reservationAutoNoShow || {};
         setReservationNoShowEnabled(Boolean(rns.enabled));
         const noShowMin = Number(rns.minutes);
@@ -1291,6 +1311,52 @@ function PreferencesSettings() {
               />
             </div>
           </SettingsCard>
+
+          {hasTables ? (
+            <SettingsCard
+              title={t('preferences.overdueTitle')}
+              description={t('preferences.overdueHelp')}
+            >
+              <div className="space-y-3">
+                <Segmented
+                  block
+                  value={overdueTablesHours}
+                  onChange={(next) => {
+                    setOverdueTablesHours(next);
+                    persistImmediate({ overdueTablesHours: next });
+                  }}
+                  ariaLabel={t('preferences.overdueTitle')}
+                  options={[
+                    { value: 6, label: t('preferences.hours6') },
+                    { value: 12, label: t('preferences.hours12') },
+                    { value: 24, label: t('preferences.hours24') },
+                    { value: 48, label: t('preferences.hours48') },
+                  ]}
+                />
+                <Segmented
+                  block
+                  value={overdueTablesAction}
+                  onChange={(next) => {
+                    setOverdueTablesAction(next);
+                    persistImmediate({ overdueTablesAction: next });
+                  }}
+                  ariaLabel={t('preferences.overdueActionLabel')}
+                  options={[
+                    {
+                      value: 'remind',
+                      label: t('preferences.overdueRemind'),
+                    },
+                    { value: 'void', label: t('preferences.overdueVoid') },
+                  ]}
+                />
+                <p className="text-[12px] text-gray-400">
+                  {overdueTablesAction === 'void'
+                    ? t('preferences.overdueVoidHelp')
+                    : t('preferences.overdueRemindHelp')}
+                </p>
+              </div>
+            </SettingsCard>
+          ) : null}
 
           {hasReservations ? (
             <SettingsCard

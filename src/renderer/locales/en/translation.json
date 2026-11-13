@@ -349,7 +349,8 @@
       "DISCOUNT": "Discounts",
       "SERVICE_CHARGE_REMOVED": "Service charge removed",
       "PRICE_CORRECTED": "Prices corrected",
-      "AUTO_VOID": "Automatic voids"
+      "AUTO_VOID": "Automatic voids",
+      "BILL_PRINTED": "Bills printed"
     },
     "kind": {
       "VOID_ITEM": "Item voided",
@@ -357,7 +358,8 @@
       "AUTO_VOID": "Table voided automatically",
       "DISCOUNT": "Discount",
       "SERVICE_CHARGE_REMOVED": "Service charge removed",
-      "PRICE_CORRECTED": "Price corrected by the till"
+      "PRICE_CORRECTED": "Price corrected by the till",
+      "BILL_PRINTED": "Bill printed before payment"
     }
   },
   "login": {
@@ -627,7 +629,16 @@
     "serviceChargeEnable": "Enable service charge",
     "fixedAmount": "Fixed",
     "savePreferences": "Save Preferences",
-    "saveFailed": "Could not save preferences."
+    "saveFailed": "Could not save preferences.",
+    "hours6": "6 hours",
+    "hours48": "48 hours",
+    "overdueTitle": "Tables left open",
+    "overdueHelp": "What the till does when a table has been open longer than this. The check runs every hour.",
+    "overdueActionLabel": "What to do",
+    "overdueRemind": "Remind admins",
+    "overdueVoid": "Void automatically",
+    "overdueRemindHelp": "Admins and the table's waiter get a notice once per sitting. The table stays open until a person closes it, takes the payment, or voids it with a reason.",
+    "overdueVoidHelp": "The unpaid items are voided and the table closed with no approval. Each automatic void is kept in Voids & discounts."
   },
   "settingsNav": {
     "groupVenue": "Venue",

@@ -109,6 +109,7 @@ export default function AdminBillEventsPage() {
     'SERVICE_CHARGE_REMOVED',
     'PRICE_CORRECTED',
     'AUTO_VOID',
+    'BILL_PRINTED',
   ];
 
   return (
@@ -243,14 +244,16 @@ export default function AdminBillEventsPage() {
                         className={
                           approver ||
                           r.kind === 'PRICE_CORRECTED' ||
-                          r.kind === 'AUTO_VOID'
+                          r.kind === 'AUTO_VOID' ||
+                          r.kind === 'BILL_PRINTED'
                             ? ''
                             : 'text-amber-400'
                         }
                       >
                         {approver ??
                           (r.kind === 'PRICE_CORRECTED' ||
-                          r.kind === 'AUTO_VOID'
+                          r.kind === 'AUTO_VOID' ||
+                          r.kind === 'BILL_PRINTED'
                             ? '—'
                             : t('adminBillEvents.noApproval'))}
                       </Td>

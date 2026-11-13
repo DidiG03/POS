@@ -290,6 +290,10 @@ export const coreServices = {
           ...((current.preferences as any)?.blockShiftReopen || {}),
           ...((input.preferences as any)?.blockShiftReopen || {}),
         },
+        overdueTables: {
+          ...((current.preferences as any)?.overdueTables || {}),
+          ...((input.preferences as any)?.overdueTables || {}),
+        },
       };
     if (input?.fiscal) {
       merged.fiscal = { ...(current.fiscal || {}), ...input.fiscal };

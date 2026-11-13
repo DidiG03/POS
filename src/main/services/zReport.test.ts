@@ -7,6 +7,7 @@ const h = vi.hoisted(() => ({
   payments: [] as any[],
   items: [] as any[],
   corrections: [] as any[],
+  billsPrinted: 0,
   declarations: [] as any[],
   fetchArgs: [] as Array<{ from: Date; to: Date }>,
   settings: {} as any,
@@ -28,6 +29,7 @@ vi.mock('@db/client', () => ({
     payment: { findMany: async () => h.payments },
     orderItem: { findMany: async () => h.items },
     saleCorrection: { findMany: async () => h.corrections },
+    billEvent: { count: async () => h.billsPrinted ?? 0 },
   },
 }));
 vi.mock('./core', () => ({

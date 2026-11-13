@@ -150,6 +150,11 @@ export function isReceiptCopy(kind: string, meta: any): boolean {
   );
 }
 
+/** A bill printed before payment (`billSlip.ts`): the apps' `TICKET` kind. */
+export function isPreBill(kind: string): boolean {
+  return kind === 'TICKET';
+}
+
 /** VOID / REPRINT / LATE line on top of a kitchen slip, or null. */
 export function kitchenSlipBanner(
   meta: any,
@@ -602,6 +607,11 @@ export function zReportRows(
       label: L('Voided tickets', 'Fatura të anuluara'),
       value: String(z.voidedTickets ?? 0),
     },
+    {
+      kind: 'pair',
+      label: L('Bills printed', 'Llogari të printuara'),
+      value: String(z.billsPrinted ?? 0),
+    },
     { kind: 'sep' },
   );
   // The drawer, every amount with its currency (QA v0.2.104, #2): float
@@ -828,6 +838,16 @@ export function buildEscposTicket(
     if (isReceiptCopy(kind, meta)) {
       lines.push(cmdBold(true));
       lines.push(escposText(`${copy.receiptCopyBanner}\n`));
+      lines.push(cmdBold(false));
+      lines.push(escposText(`${layout.sep}\n`));
+    }
+    // A bill printed before payment is not a receipt and not an invoice,
+    // and says so, so one cannot be handed over in place of a fiscal one.
+    if (isPreBill(kind)) {
+      lines.push(cmdBold(true));
+      for (const ln of wrapEscposText(copy.billBanner, layout.cols)) {
+        lines.push(escposText(`${ln}\n`));
+      }
       lines.push(cmdBold(false));
       lines.push(escposText(`${layout.sep}\n`));
     }
@@ -1400,7 +1420,7 @@ export function buildHtmlReceipt(
     ${payload.userName ? `<div class="small">${safe(receiptStaffLabel(receiptDiningFloor(payload.area), lang))}: ${safe(payload.userName)}</div>` : ''}
     <div class="small">${safe(nowStr)}</div>
     <div class="sep"></div>
-    ${isReceiptCopy(kind, meta) ? `<div class="paid">${safe(copy.receiptCopyBanner)}</div><div class="sep"></div>` : ''}`
+    ${isReceiptCopy(kind, meta) ? `<div class="paid">${safe(copy.receiptCopyBanner)}</div><div class="sep"></div>` : ''}${isPreBill(kind) ? `<div class="paid">${safe(copy.billBanner)}</div><div class="sep"></div>` : ''}`
     }
     ${rows}
     ${

@@ -89,6 +89,14 @@ export interface SettingsDTO {
       enabled?: boolean;
       hours?: 12 | 24;
     };
+    /**
+     * A table open longer than `hours`: remind the admins and the waiter
+     * once per sitting (default), or void its unpaid lines automatically.
+     */
+    overdueTables?: {
+      hours?: number;
+      action?: 'remind' | 'void';
+    };
   };
   // Multi-printer support (recommended). Backward compatible with legacy `printer`.
   printers?: PrinterProfileDTO[];
@@ -1187,7 +1195,8 @@ export type BillEventKindDTO =
   | 'AUTO_VOID'
   | 'DISCOUNT'
   | 'SERVICE_CHARGE_REMOVED'
-  | 'PRICE_CORRECTED';
+  | 'PRICE_CORRECTED'
+  | 'BILL_PRINTED';
 
 export interface BillEventDTO {
   id: number;

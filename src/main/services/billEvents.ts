@@ -21,7 +21,9 @@ export type BillEventKind =
   | 'AUTO_VOID'
   | 'DISCOUNT'
   | 'SERVICE_CHARGE_REMOVED'
-  | 'PRICE_CORRECTED';
+  | 'PRICE_CORRECTED'
+  /** A bill printed before payment: nothing taken off, but counted. */
+  | 'BILL_PRINTED';
 
 export const BILL_EVENT_KINDS: readonly BillEventKind[] = [
   'VOID_ITEM',
@@ -30,6 +32,7 @@ export const BILL_EVENT_KINDS: readonly BillEventKind[] = [
   'DISCOUNT',
   'SERVICE_CHARGE_REMOVED',
   'PRICE_CORRECTED',
+  'BILL_PRINTED',
 ];
 
 export type BillEventSource = 'till' | 'phone' | 'auto';
@@ -277,6 +280,18 @@ export async function listBillEvents(
         ? r.createdAt.toISOString()
         : new Date(r.createdAt).toISOString(),
   }));
+}
+
+/** How many events of these kinds happened in `[from, to]`. */
+export async function countBillEventsBetween(
+  kinds: BillEventKind[],
+  from: Date,
+  to: Date,
+  deps?: BillEventDeps,
+): Promise<number> {
+  return database(deps).billEvent.count({
+    where: { kind: { in: kinds }, createdAt: { gte: from, lte: to } },
+  });
 }
 
 /** How many events of these kinds one person made since `since`. */

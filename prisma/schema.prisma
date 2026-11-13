@@ -567,7 +567,7 @@ model SecurityEvent {
 model BillEvent {
   id           Int      @id @default(autoincrement())
   /// VOID_ITEM | VOID_TICKET | AUTO_VOID | DISCOUNT |
-  /// SERVICE_CHARGE_REMOVED | PRICE_CORRECTED
+  /// SERVICE_CHARGE_REMOVED | PRICE_CORRECTED | BILL_PRINTED
   kind         String
   area         String   @default("")
   tableLabel   String   @default("")

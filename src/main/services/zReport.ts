@@ -21,6 +21,7 @@ import { eurExchangeRateFromSettings } from '@shared/paymentDisplay';
 import { isVatEnabledFromSettings } from '@shared/vatFromFiscal';
 import { coreServices } from './core';
 import { countVoidedTickets, fetchPaidSales } from './paidAnalytics';
+import { countBillEventsBetween } from './billEvents';
 import { listCashDeclarations } from './fiscal/cashDrawer';
 import { readDailyBalanceRecord } from './fiscal/balance';
 import { fiscalDayKeysBetween, startOfFiscalDay } from './fiscal/clock';
@@ -62,6 +63,8 @@ export type ZReport = {
   };
   corrections: { count: number; cancellations: number; amount: number };
   voidedTickets: number;
+  /** Bills printed before payment in the period (`billSlip.ts`). */
+  billsPrinted: number;
   /**
    * The drawer, in the till's currency (`currency`). Opening float and cash
    * in/out are declared to easyPos in lekë (`declared`); on a till that
@@ -320,9 +323,10 @@ export async function computeZReport(input: {
     })
     .catch(() => [])) as Array<{ kind: string; amountDelta: unknown }>;
 
-  const [voidedTickets, queued, review, declarations, opening] =
+  const [voidedTickets, billsPrinted, queued, review, declarations, opening] =
     await Promise.all([
       countVoidedTickets(from, to).catch(() => 0),
+      countBillEventsBetween(['BILL_PRINTED'], from, to).catch(() => 0),
       fiscalEnabled
         ? listFiscalClaimsDeferred()
             .then((r) => r.length)
@@ -406,6 +410,7 @@ export async function computeZReport(input: {
       ),
     },
     voidedTickets,
+    billsPrinted,
     cash: {
       currency,
       opening: openingTill == null ? null : fromCents(openingTill),
