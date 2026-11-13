@@ -17,7 +17,12 @@
  *                                              what it was quoted
  *   - anything else                          → the menu's price/VAT, and
  *                                              the correction is reported
- *   - not on the menu at all                 → unchanged, but reported
+ *   - not on the menu, but on the table's
+ *     bill (an item taken off the menu while
+ *     the table was seated)                  → the bill's price, reported
+ *   - not on the menu and not on the bill    → refused: a payment cannot
+ *                                              charge a price the till has
+ *                                              no record of
  *   - not on the menu, negative price        → dropped, reported
  *   - quantity zero or negative              → dropped, reported
  *
@@ -31,7 +36,10 @@ import {
   readMenuPriceHistorySince,
   type MenuPriceHistoryEntry,
 } from './menuPriceHistory';
-import { getTableSessionStartedAt } from './tableSession';
+import {
+  findLatestTicketLogForCurrentSession,
+  getTableSessionStartedAt,
+} from './tableSession';
 
 /**
  * How far back to look for a sitting with no recorded start. Tables are no
@@ -53,7 +61,7 @@ export interface MenuPrice {
 }
 
 export interface LinePriceIssue {
-  kind: 'repriced' | 'unknown' | 'dropped';
+  kind: 'repriced' | 'unknown' | 'dropped' | 'refused';
   name: string;
   sku: string;
   claimedPrice: number | null;
@@ -107,10 +115,30 @@ function findMenuItem(
  * Pure core: reprice `items` against a menu snapshot plus the prices the
  * menu had since the sitting began.
  */
+/** The table's own bill line for an off-menu line: by id, else by code and name. */
+function billLineFor(line: any, bill: any[]): any | null {
+  const live = bill.filter(
+    (b) => b && b.voided !== true && b.paid !== true && b.staged !== true,
+  );
+  const id = String(line?.lineId ?? '').trim();
+  if (id) return live.find((b) => String(b.lineId ?? '').trim() === id) ?? null;
+  const sku = String(line?.sku ?? '').trim();
+  const name = String(line?.name ?? '').trim();
+  return (
+    live.find(
+      (b) =>
+        String(b.sku ?? '').trim() === sku &&
+        String(b.name ?? '').trim() === name,
+    ) ?? null
+  );
+}
+
 export function repriceLines(
   items: unknown,
   menu: MenuPrice[],
   history: MenuPriceHistoryEntry[],
+  /** The table's current bill, for lines whose item left the menu. */
+  bill: any[] = [],
 ): RepriceResult {
   const bySku = new Map<string, MenuPrice>();
   const byName = new Map<string, MenuPrice | null>();
@@ -157,8 +185,24 @@ export function repriceLines(
         issues.push({ kind: 'dropped', name, sku, claimedPrice, qty });
         continue;
       }
-      issues.push({ kind: 'unknown', name, sku, claimedPrice });
-      out.push(line);
+      const onBill = billLineFor(line, bill);
+      if (!onBill) {
+        issues.push({ kind: 'refused', name, sku, claimedPrice, qty });
+        continue;
+      }
+      const billPrice = finite(onBill.unitPrice);
+      issues.push({
+        kind: 'unknown',
+        name,
+        sku,
+        claimedPrice,
+        ...(billPrice !== null ? { menuPrice: billPrice } : {}),
+      });
+      out.push({
+        ...line,
+        unitPrice: roundMoney(billPrice ?? 0),
+        vatRate: finite(onBill.vatRate) ?? claimedVat,
+      });
       continue;
     }
 
@@ -225,8 +269,11 @@ export function describeLineIssues(issues: LinePriceIssue[]): string | null {
         ? `${label} removed (price ${money(i.claimedPrice)})`
         : `${label} removed (quantity ${i.qty ?? '?'})`;
     }
+    if (i.kind === 'refused') {
+      return `${label} is not on the menu or the bill (payment refused)`;
+    }
     if (i.kind === 'unknown') {
-      return `${label} is not on the menu (charged ${money(i.claimedPrice)} as sent)`;
+      return `${label} is no longer on the menu (charged ${money(i.menuPrice ?? i.claimedPrice)} as on the bill)`;
     }
     const changes: string[] = [];
     if (i.claimedPrice === null || !samePrice(i.claimedPrice, i.menuPrice!)) {
@@ -295,7 +342,14 @@ export async function repriceLinesFromMenu(input: {
       ),
     );
     const history = await readMenuPriceHistorySince(since).catch(() => []);
-    return repriceLines(input.items, menu, history);
+    const sitting = await findLatestTicketLogForCurrentSession(
+      input.area,
+      input.tableLabel,
+    ).catch(() => null);
+    const bill = Array.isArray((sitting as any)?.itemsJson)
+      ? ((sitting as any).itemsJson as any[])
+      : [];
+    return repriceLines(input.items, menu, history, bill);
   } catch (e) {
     console.error('[linePricing] could not read the menu to check prices', e);
     return null;

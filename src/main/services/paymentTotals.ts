@@ -49,6 +49,11 @@ export interface EnforceTotalsResult {
   mismatch: string | null;
   /** Lines that were repriced, dropped or not found on the menu. */
   lineIssues: LinePriceIssue[];
+  /**
+   * Lines on neither the menu nor the table's bill. A live payment that
+   * has any must be refused (`paymentLines.ts`).
+   */
+  refusedLines: LinePriceIssue[];
 }
 
 function isPayment(payload: any): boolean {
@@ -126,7 +131,13 @@ export async function enforceAuthoritativePaymentTotals(
   source: 'ipc' | 'lan',
 ): Promise<EnforceTotalsResult> {
   if (!isPayment(payload)) {
-    return { payload, validation: null, mismatch: null, lineIssues: [] };
+    return {
+      payload,
+      validation: null,
+      mismatch: null,
+      lineIssues: [],
+      refusedLines: [],
+    };
   }
 
   const meta = (payload?.meta as Record<string, any>) || {};
@@ -182,5 +193,11 @@ export async function enforceAuthoritativePaymentTotals(
     await recordMismatch(next, validation, mismatch, source);
   }
 
-  return { payload: next, validation, mismatch, lineIssues };
+  return {
+    payload: next,
+    validation,
+    mismatch,
+    lineIssues,
+    refusedLines: lineIssues.filter((i) => i.kind === 'refused'),
+  };
 }

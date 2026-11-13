@@ -31,6 +31,7 @@ vi.mock('@db/client', () => ({
 
 vi.mock('./tableSession', () => ({
   getTableSessionStartedAt: vi.fn(async () => new Date(Date.now() - 60_000)),
+  findLatestTicketLogForCurrentSession: vi.fn(async () => null),
 }));
 
 import { enforceAuthoritativePaymentTotals } from './paymentTotals';

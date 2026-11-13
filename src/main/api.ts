@@ -153,6 +153,7 @@ import {
 } from './services/paymentSettle';
 import { findStaleBillPayment } from './services/staleBill';
 import { checkPaymentApproval } from './services/paymentApproval';
+import { checkPaymentLines } from './services/paymentLines';
 import { stampPaymentForSession } from './services/paymentStamp';
 import { checkBillSlip, UNKNOWN_SLIP_KIND } from './services/billSlip';
 import { appLogTail } from './services/appLog';
@@ -3131,6 +3132,18 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
               return send(res, 409, approvalRefused, corsOrigin);
             }
             if (payload?.meta) delete payload.meta.managerApprovalToken;
+            // Key present, every line on the menu or the bill, and a
+            // seat's share only for what the bill has (`paymentLines.ts`).
+            const linesRefused = await checkPaymentLines({
+              area: payload.area,
+              tableLabel: payload.tableLabel,
+              items: payload.items,
+              closeTable: paymentShouldCloseTable(payload?.meta),
+              idempotencyKey: printIdempotencyKey,
+              refusedLines: enforcedTotals.refusedLines,
+              sitting: paySitting,
+            });
+            if (linesRefused) return send(res, 409, linesRefused, corsOrigin);
             if (paymentShouldCloseTable(payload?.meta)) {
               const stale = await findStaleBillPayment({
                 ...payload,

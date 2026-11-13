@@ -34,6 +34,7 @@ import { resolveHostIntent } from '@shared/tableIntent';
 import { coreServices } from './services/core';
 import { verifyManagerPin } from './services/managerPin';
 import { checkPaymentApproval } from './services/paymentApproval';
+import { checkPaymentLines } from './services/paymentLines';
 import { stampPaymentForSession } from './services/paymentStamp';
 import {
   billEventLines,
@@ -2931,6 +2932,18 @@ ipcHandle('tickets:print', async (_e, input, ctx) => {
       });
       if (approvalRefused) return approvalRefused;
       if (meta) delete meta.managerApprovalToken;
+      // Key present, every line on the menu or the bill, and a seat's
+      // share only for what the bill has (`paymentLines.ts`).
+      const linesRefused = await checkPaymentLines({
+        area,
+        tableLabel,
+        items: payload.items,
+        closeTable: paymentShouldCloseTable(meta),
+        idempotencyKey,
+        refusedLines: enforcedTotals.refusedLines,
+        sitting: paySitting,
+      });
+      if (linesRefused) return linesRefused as any;
       if (paymentShouldCloseTable(meta)) {
         const stale = await findStaleBillPayment({
           area,

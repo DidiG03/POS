@@ -49,6 +49,7 @@ vi.mock('@db/client', () => ({
 
 vi.mock('./tableSession', () => ({
   getTableSessionStartedAt: vi.fn(async () => seatedAt.value),
+  findLatestTicketLogForCurrentSession: vi.fn(async () => null),
 }));
 
 import {
@@ -190,7 +191,7 @@ describe('repriceLines', () => {
     ]);
   });
 
-  it('keeps an item that is not on the menu but reports it', () => {
+  it('refuses an item that is on neither the menu nor the bill', () => {
     const line = {
       sku: 'GHOST',
       name: 'Ghost',
@@ -199,8 +200,57 @@ describe('repriceLines', () => {
       vatRate: 0.2,
     };
     const r = repriceLines([line], menu, []);
-    expect(r.items).toEqual([line]);
-    expect(describeLineIssues(r.issues)).toContain('Ghost is not on the menu');
+    expect(r.items).toEqual([]);
+    expect(r.issues[0].kind).toBe('refused');
+    expect(describeLineIssues(r.issues)).toContain(
+      'Ghost is not on the menu or the bill',
+    );
+  });
+
+  it('charges an item taken off the menu at the price on the bill', () => {
+    const bill = [
+      {
+        lineId: 'L1',
+        sku: 'OLD',
+        name: 'Old dish',
+        qty: 1,
+        unitPrice: 900,
+        vatRate: 0.2,
+      },
+    ];
+    const r = repriceLines(
+      [
+        {
+          lineId: 'L1',
+          sku: 'OLD',
+          name: 'Old dish',
+          qty: 1,
+          unitPrice: 1,
+          vatRate: 0.2,
+        },
+      ],
+      menu,
+      [],
+      bill,
+    );
+    expect(r.items[0].unitPrice).toBe(900);
+    expect(r.issues[0].kind).toBe('unknown');
+    // A renamed copy of it is not on the bill, so it is refused.
+    const renamed = repriceLines(
+      [{ sku: 'OLD2', name: 'Old dish (small)', qty: 1, unitPrice: 1 }],
+      menu,
+      [],
+      bill,
+    );
+    expect(renamed.issues[0].kind).toBe('refused');
+    // A paid or voided bill line does not count.
+    const paid = repriceLines(
+      [{ lineId: 'L1', sku: 'OLD', name: 'Old dish', qty: 1, unitPrice: 1 }],
+      menu,
+      [],
+      [{ ...bill[0], paid: true }],
+    );
+    expect(paid.issues[0].kind).toBe('refused');
   });
 
   it('drops an off-menu line with a negative price', () => {
@@ -232,8 +282,9 @@ describe('repriceLines', () => {
       menu,
       [],
     );
-    expect(r.items[0].unitPrice).toBe(15);
-    expect(r.issues[0].kind).toBe('unknown');
+    // Ambiguous and not on the bill: refused rather than charged as sent.
+    expect(r.items).toEqual([]);
+    expect(r.issues[0].kind).toBe('refused');
   });
 
   it('leaves voided lines alone — they are not charged', () => {

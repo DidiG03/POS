@@ -57,7 +57,18 @@ export function markPaidLines(
       continue;
     }
     if (isLive(out[at])) {
-      out[at] = { ...out[at], paid: true };
+      const have = qtyOf(out[at]);
+      const want = qtyOf(line);
+      if (want > EPS && want < have - EPS) {
+        // Paid for part of the line (1 of 3 beers): only that part is
+        // paid. The whole line used to be marked paid.
+        const paidPart = { ...out[at], qty: roundQty(want), paid: true };
+        delete (paidPart as MergeLine).lineId;
+        out[at] = { ...out[at], qty: roundQty(have - want) };
+        out.splice(at, 0, paidPart);
+      } else {
+        out[at] = { ...out[at], paid: true };
+      }
       changed = true;
     }
   }
