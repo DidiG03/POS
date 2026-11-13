@@ -148,6 +148,11 @@ export interface SettingsDTO {
     allowLan?: boolean;
     requirePairingCode?: boolean;
     pairingCode?: string;
+    /**
+     * Back to the PIN pad after this many minutes without a touch, on the
+     * till, phones and the Admin app. 0 is off; default 10.
+     */
+    idleLockMinutes?: 0 | 2 | 5 | 10 | 15 | 30;
   };
   /**
    * Desktop host process. Closing the till window keeps this app (and the

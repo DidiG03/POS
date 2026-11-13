@@ -39,6 +39,7 @@ import { syncTabletToHostVersion } from '../utils/syncTabletToHostVersion';
 import { bootTrace } from '@shared/bootTrace';
 import { POS_APP_UPDATE_REQUIRED } from '../utils/appUpdateEvent';
 import { toast } from '../stores/toasts';
+import { useIdleLock } from './useIdleLock';
 
 const router = createHashRouter(routes);
 
@@ -175,6 +176,8 @@ function BootScreen({
 
 function Root() {
   const { t } = useTranslation();
+  // Back to the PIN pad after the venue's idle time (`useIdleLock.ts`).
+  useIdleLock();
   const [ready, setReady] = useState(false);
   const [msg, setMsg] = useState(() => t('boot.starting'));
   const [detail, setDetail] = useState<string | undefined>(undefined);

@@ -131,7 +131,8 @@
     "invalidHost": "Enter a Wi-Fi address like 192.168.10.16",
     "cannotReachHost": "This phone cannot reach {{host}}:{{port}}. Stay on the same Wi-Fi as the POS computer. On iPhone: Settings → Privacy & Security → Local Network → turn on the OneTap app.",
     "holdIconToScan": "Hold the logo for 5 seconds to change POS server",
-    "reloadChunk": "Couldn’t load this screen. Retrying…"
+    "reloadChunk": "Couldn’t load this screen. Retrying…",
+    "lockedIdle": "Locked after {{minutes}} minutes without use. Sign in again."
   },
   "vault": {
     "setupTitle": "Protect this till",
@@ -638,7 +639,11 @@
     "overdueRemind": "Remind admins",
     "overdueVoid": "Void automatically",
     "overdueRemindHelp": "Admins and the table's waiter get a notice once per sitting. The table stays open until a person closes it, takes the payment, or voids it with a reason.",
-    "overdueVoidHelp": "The unpaid items are voided and the table closed with no approval. Each automatic void is kept in Voids & discounts."
+    "overdueVoidHelp": "The unpaid items are voided and the table closed with no approval. Each automatic void is kept in Voids & discounts.",
+    "idleLockTitle": "Lock screens when not in use",
+    "idleLockHelp": "After this long without a touch, the till, waiters' phones and the Admin app go back to the PIN pad, so the next person cannot act as the last one. An order being typed and orders waiting to reach the till are kept for that person's next sign-in. Kitchen screens never lock.",
+    "idleLockOff": "Off",
+    "minutesN": "{{n}} min"
   },
   "settingsNav": {
     "groupVenue": "Venue",

@@ -9,6 +9,7 @@
  * checked here, when saved, with a message the owner can act on.
  */
 import { overdueTablesProblem } from './overdueTables';
+import { idleLockProblem } from '@shared/idleLock';
 import {
   fiscalEnvironmentOf,
   operatorCodesProblem,
@@ -226,6 +227,11 @@ export function assertSettingsPatch(
 
   if (has(input, 'tableAreas')) {
     const problem = tableAreasProblem(input.tableAreas);
+    if (problem) refuse(problem);
+  }
+
+  if (input.security && has(input.security, 'idleLockMinutes')) {
+    const problem = idleLockProblem(input.security.idleLockMinutes);
     if (problem) refuse(problem);
   }
 

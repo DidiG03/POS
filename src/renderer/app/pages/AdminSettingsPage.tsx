@@ -9,6 +9,7 @@ import type {
   UpdateStatusDTO,
 } from '@shared/ipc';
 import { toast } from '../../stores/toasts';
+import { idleLockMinutes } from '@shared/idleLock';
 import { downloadBlob } from '../../utils/spreadsheet';
 import { ALL_KDS_STATIONS, type KdsStation } from '@shared/kdsStations';
 import FloorCanvas from '../components/FloorCanvas';
@@ -766,6 +767,9 @@ function PreferencesSettings() {
   const [value, setValue] = useState<string>('10');
   const [requireMgrDiscount, setRequireMgrDiscount] = useState(true);
   const [requireMgrVoid, setRequireMgrVoid] = useState(true);
+  const [idleLockMins, setIdleLockMins] = useState<0 | 2 | 5 | 10 | 15 | 30>(
+    10,
+  );
   const [requireMgrServiceRemoval, setRequireMgrServiceRemoval] =
     useState(true);
   const [autoCloseShiftEnabled, setAutoCloseShiftEnabled] = useState(false);
@@ -798,6 +802,7 @@ function PreferencesSettings() {
     value: string;
     requireMgrDiscount: boolean;
     requireMgrVoid: boolean;
+    idleLockMins: 0 | 2 | 5 | 10 | 15 | 30;
     requireMgrServiceRemoval: boolean;
     captureClockInOut: boolean;
     blockShiftReopenEnabled: boolean;
@@ -820,6 +825,7 @@ function PreferencesSettings() {
     value: '10',
     requireMgrDiscount: true,
     requireMgrVoid: true,
+    idleLockMins: 10,
     requireMgrServiceRemoval: true,
     captureClockInOut: true,
     blockShiftReopenEnabled: false,
@@ -848,6 +854,7 @@ function PreferencesSettings() {
     value,
     requireMgrDiscount,
     requireMgrVoid,
+    idleLockMins,
     requireMgrServiceRemoval,
     captureClockInOut,
     blockShiftReopenEnabled,
@@ -903,6 +910,7 @@ function PreferencesSettings() {
         // Still stored under fiscal so easyPos invoice exRate keeps working.
         fiscal: { eurExchangeRate: eurRate },
         security: {
+          idleLockMinutes: next.idleLockMins,
           approvals: {
             requireManagerPinForDiscount: next.requireMgrDiscount,
             requireManagerPinForVoid: next.requireMgrVoid,
@@ -1047,6 +1055,7 @@ function PreferencesSettings() {
         const approvals = (s as any)?.security?.approvals || {};
         setRequireMgrDiscount(approvals.requireManagerPinForDiscount !== false);
         setRequireMgrVoid(approvals.requireManagerPinForVoid !== false);
+        setIdleLockMins(idleLockMinutes(s));
         setRequireMgrServiceRemoval(
           approvals.requireManagerPinForServiceChargeRemoval !== false,
         );
@@ -1171,6 +1180,29 @@ function PreferencesSettings() {
               options={[
                 { value: 'dark', label: t('preferences.themeDark') },
                 { value: 'light', label: t('preferences.themeLight') },
+              ]}
+            />
+          </SettingsCard>
+
+          <SettingsCard
+            title={t('preferences.idleLockTitle')}
+            description={t('preferences.idleLockHelp')}
+          >
+            <Segmented
+              block
+              value={idleLockMins}
+              onChange={(next) => {
+                setIdleLockMins(next);
+                persistImmediate({ idleLockMins: next });
+              }}
+              ariaLabel={t('preferences.idleLockTitle')}
+              options={[
+                { value: 0, label: t('preferences.idleLockOff') },
+                { value: 2, label: t('preferences.minutesN', { n: 2 }) },
+                { value: 5, label: t('preferences.minutesN', { n: 5 }) },
+                { value: 10, label: t('preferences.minutesN', { n: 10 }) },
+                { value: 15, label: t('preferences.minutesN', { n: 15 }) },
+                { value: 30, label: t('preferences.minutesN', { n: 30 }) },
               ]}
             />
           </SettingsCard>
