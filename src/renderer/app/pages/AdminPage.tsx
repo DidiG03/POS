@@ -144,6 +144,26 @@ export default function AdminPage() {
   const [params] = useSearchParams();
   const hasTables = useLicenseCapabilities((s) => s.hasTables);
   const [ov, setOv] = useState<Overview | null>(null);
+  const [health, setHealth] = useState<
+    Array<{ kind: string; level: 'warn' | 'danger'; message: string }>
+  >([]);
+  // Disk, backup and clock warnings about the till (`tillHealth.ts`).
+  useEffect(() => {
+    let cancelled = false;
+    const api = window.api.admin as {
+      getTillHealth?: () => Promise<{ warnings?: any[] }>;
+    };
+    if (!api.getTillHealth) return;
+    api
+      .getTillHealth()
+      .then((r) => {
+        if (!cancelled) setHealth(Array.isArray(r?.warnings) ? r.warnings : []);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   const [currency, setCurrency] = useState<string>('EUR');
   const [shifts, setShifts] = useState<AdminShift[]>([]);
   const [staffTodayStats, setStaffTodayStats] = useState<
@@ -588,6 +608,19 @@ export default function AdminPage() {
 
   return (
     <div className="admin-page">
+      {health.map((w) => (
+        <div
+          key={w.kind}
+          role="alert"
+          className={
+            w.level === 'danger'
+              ? 'border border-rose-700/50 bg-rose-950/40 px-3 py-2 text-[13px] text-rose-200'
+              : 'border border-amber-700/40 bg-amber-950/40 px-3 py-2 text-[13px] text-amber-200'
+          }
+        >
+          {w.message}
+        </div>
+      ))}
       {adminNotice ? (
         <div className="border border-amber-700/40 bg-amber-950/40 px-3 py-2 text-[13px] text-amber-200">
           {adminNotice}

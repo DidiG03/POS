@@ -1328,6 +1328,16 @@ export interface ApiAdmin {
   getSecurityLog(limit?: number): Promise<SecurityLogEntry[]>;
   /** Voids, discounts and corrections, newest first. Kept for good. */
   listBillEvents(input?: BillEventQueryDTO): Promise<BillEventDTO[]>;
+  /** Disk, backup and clock warnings about the till (Admin companion). */
+  getTillHealth?(): Promise<{
+    warnings: Array<{
+      kind: string;
+      level: 'warn' | 'danger';
+      message: string;
+    }>;
+    savedElsewhereAt: string | null;
+    freeBytes: number | null;
+  }>;
   /** The newest part of the till's log file (Admin companion only). */
   getTillLog?(): Promise<{
     ok: boolean;

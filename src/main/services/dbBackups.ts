@@ -207,3 +207,80 @@ export async function restoreDbBackup(
     return { ok: false, error: String(e?.message || e || 'Restore failed') };
   }
 }
+
+/** When a backup last left this computer, and where to (`saveBackupTo`). */
+export const BACKUP_SAVED_ELSEWHERE_KEY = 'backups:lastSavedElsewhere';
+
+export async function readBackupSavedElsewhere(): Promise<{
+  at: string;
+  file: string;
+} | null> {
+  const row = await prisma.syncState
+    .findUnique({ where: { key: BACKUP_SAVED_ELSEWHERE_KEY } })
+    .catch(logIgnored('dbBackups:readSavedElsewhere', null));
+  const v = (row as any)?.valueJson;
+  return v && typeof v.at === 'string' ? v : null;
+}
+
+/**
+ * Make a backup and copy it into `folder` (a USB stick, a synced folder),
+ * then read the copy back and check it, as for any backup.
+ *
+ * Backups are otherwise kept on the same disk as the ledger: a dead disk
+ * took both. This is still started by a person — there is no automatic
+ * backup — and only on the till itself.
+ */
+export async function saveBackupTo(
+  folder: string,
+  deps: {
+    makeBackup?: () => Promise<{ ok: boolean; file?: string; error?: string }>;
+  } = {},
+): Promise<{
+  ok: boolean;
+  file?: string;
+  error?: string;
+}> {
+  const made = await (deps.makeBackup ?? createDbBackupNow)();
+  if (!made.ok || !made.file) return made;
+  const dest = join(folder, made.file.split(/[\\/]/).pop() as string);
+  try {
+    fs.copyFileSync(made.file, dest);
+    // Pushed to the device: a USB stick pulled out early keeps nothing.
+    const fd = fs.openSync(dest, 'r+');
+    try {
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch (e: any) {
+    return {
+      ok: false,
+      error: `The backup could not be written to ${folder}: ${String(e?.message || e)}`,
+    };
+  }
+  const verdict = await checkLedgerFile(dest, openLedgerEncryptionKey());
+  if (!verdict.ok) {
+    try {
+      fs.unlinkSync(dest);
+    } catch {
+      // reported as failed either way
+    }
+    return {
+      ok: false,
+      error: `The copy in ${folder} did not pass its check and was removed. ${verdict.detail}`,
+    };
+  }
+  await prisma.syncState
+    .upsert({
+      where: { key: BACKUP_SAVED_ELSEWHERE_KEY },
+      create: {
+        key: BACKUP_SAVED_ELSEWHERE_KEY,
+        valueJson: { at: new Date().toISOString(), file: dest } as any,
+      },
+      update: {
+        valueJson: { at: new Date().toISOString(), file: dest } as any,
+      },
+    })
+    .catch(logIgnored('dbBackups:recordSavedElsewhere', null));
+  return { ok: true, file: dest };
+}

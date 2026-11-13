@@ -35,6 +35,10 @@ import { coreServices } from './services/core';
 import { verifyManagerPin } from './services/managerPin';
 import { checkPaymentApproval } from './services/paymentApproval';
 import { checkPaymentLines } from './services/paymentLines';
+import {
+  startTillHealthChecks,
+  stopTillHealthChecks,
+} from './services/tillHealthRead';
 import { stampPaymentForSession } from './services/paymentStamp';
 import {
   billEventLines,
@@ -1531,6 +1535,8 @@ async function startHostDatabaseAndServicesOp(): Promise<void> {
     // PrintJob: SENT/FAILED slips older than a week. After sales-ledger
     // backfill so a PAYMENT receipt without an Order is not deleted.
     startPrintJobRetentionLoop(prisma, { days: 7 });
+    // Disk, backup and clock warnings to admins, once a day each.
+    startTillHealthChecks();
     // KDS: auto-bump stale tickets after 12 hours.
     startKdsAutoBumpLoop();
     // Tickets: auto-void stale open tables after 12 hours + notify.
@@ -1657,6 +1663,7 @@ app.on('before-quit', (event) => {
   stopNotificationRetentionLoop();
   stopSecurityEventRetention();
   stopPrintJobRetentionLoop();
+  stopTillHealthChecks();
   stopKdsAutoBumpLoop();
   stopAutoVoidStaleTicketsLoop();
   stopAutoCloseShiftsLoop();

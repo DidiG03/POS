@@ -4669,6 +4669,11 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           corsOrigin,
         );
       }
+      // Disk, backup and clock warnings about the till (`tillHealth.ts`).
+      if (req.method === 'GET' && pathname === '/admin/till-health') {
+        const { readTillHealth } = await import('./services/tillHealthRead');
+        return send(res, 200, await readTillHealth(), corsOrigin);
+      }
       // The newest part of the till's log file, for support (`appLog.ts`).
       // Secrets are masked when each line is written.
       if (req.method === 'GET' && pathname === '/admin/till-log') {

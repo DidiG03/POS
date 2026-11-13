@@ -15,6 +15,8 @@ export type AppMenuTemplateOpts = {
   onCheckForUpdates: () => void;
   onShowTillAddress?: () => void;
   onOpenLogs?: () => void;
+  /** The till only: copy a checked backup to a folder or USB stick. */
+  onSaveBackup?: () => void;
 };
 
 export function updateMenuLabel(opts: {
@@ -77,6 +79,15 @@ export function buildAppMenuTemplate(
   template.push({
     label: 'File',
     submenu: [
+      ...(opts.onSaveBackup
+        ? [
+            {
+              label: 'Save Backup To…',
+              click: () => opts.onSaveBackup?.(),
+            } as MenuItemConstructorOptions,
+            { type: 'separator' as const },
+          ]
+        : []),
       ...(opts.platform === 'darwin'
         ? []
         : [

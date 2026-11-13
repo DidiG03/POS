@@ -160,6 +160,41 @@ export async function checkForUpdatesFromMenu(): Promise<void> {
   }
 }
 
+/**
+ * File → Save Backup To…: a checked copy of the ledger on a USB stick or
+ * a synced folder (`saveBackupTo`). Started by a person, on the till.
+ */
+export async function saveBackupFromMenu(): Promise<void> {
+  const win = BrowserWindow.getFocusedWindow() ?? undefined;
+  const pick = await (win
+    ? dialog.showOpenDialog(win, {
+        title: 'Save a backup to…',
+        buttonLabel: 'Save backup here',
+        properties: ['openDirectory', 'createDirectory'],
+      })
+    : dialog.showOpenDialog({
+        title: 'Save a backup to…',
+        buttonLabel: 'Save backup here',
+        properties: ['openDirectory', 'createDirectory'],
+      }));
+  if (pick.canceled || !pick.filePaths[0]) return;
+  const { saveBackupTo } = await import('./dbBackups');
+  const r = await saveBackupTo(pick.filePaths[0]);
+  const box = r.ok
+    ? {
+        type: 'info' as const,
+        message: 'Backup saved',
+        detail: `Saved and checked:\n${r.file}\n\nKeep it somewhere other than this computer. If disk protection is on, the file needs this till's recovery key to be restored.`,
+      }
+    : {
+        type: 'error' as const,
+        message: 'The backup was not saved',
+        detail: String(r.error || 'Unknown error'),
+      };
+  if (win) await dialog.showMessageBox(win, box);
+  else await dialog.showMessageBox(box);
+}
+
 export async function showTillAddressFromMenu(): Promise<void> {
   const ips = listLanIpv4Addresses().filter((ip) => !ip.startsWith('169.254.'));
   const lines = ips.length
@@ -212,6 +247,11 @@ function refreshAppMenu(): void {
     onOpenLogs: () => {
       void openAppLogFolder();
     },
+    onSaveBackup: isAdminShell()
+      ? undefined
+      : () => {
+          void saveBackupFromMenu();
+        },
   });
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }

@@ -1829,6 +1829,9 @@ export function installBrowserLanApi(): void {
           `/admin/sales-trends?range=${encodeURIComponent(range)}`,
         );
       },
+      async getTillHealth() {
+        return await goLan('/admin/till-health');
+      },
       async getTillLog() {
         return await goLan('/admin/till-log');
       },
