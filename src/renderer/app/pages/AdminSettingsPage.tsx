@@ -546,10 +546,30 @@ function SystemUpdatesSettings() {
 function TillLogCard() {
   const { t } = useTranslation();
   const [busy, setBusy] = useState(false);
+  const [reports, setReports] = useState(true);
+  useEffect(() => {
+    void window.api.settings
+      .get()
+      .then((s: any) => setReports(s?.privacy?.crashReports !== false))
+      .catch(() => undefined);
+  }, []);
+  const setCrashReports = async (next: boolean) => {
+    setReports(next);
+    try {
+      await window.api.settings.update({ privacy: { crashReports: next } });
+    } catch (e: unknown) {
+      setReports(!next);
+      toast.error(
+        String(
+          (e as { message?: string })?.message || t('common.actionFailed'),
+        ),
+      );
+    }
+  };
   const getTillLog = (window.api.admin as { getTillLog?: () => Promise<any> })
     .getTillLog;
-  if (!getTillLog) return null;
   const download = async () => {
+    if (!getTillLog) return;
     setBusy(true);
     try {
       const r = await getTillLog();
@@ -579,13 +599,22 @@ function TillLogCard() {
       title={t('settingsSupport.title')}
       description={t('settingsSupport.help')}
     >
-      <Button
-        variant="secondary"
-        onClick={() => void download()}
-        disabled={busy}
-      >
-        {busy ? t('common.loading') : t('settingsSupport.downloadLog')}
-      </Button>
+      <div className="space-y-3">
+        <Button
+          variant="secondary"
+          onClick={() => void download()}
+          disabled={busy}
+        >
+          {busy ? t('common.loading') : t('settingsSupport.downloadLog')}
+        </Button>
+        <SettingsToggleRow
+          title={t('settingsSupport.crashReports')}
+          description={t('settingsSupport.crashReportsHelp')}
+          checked={reports}
+          onChange={(next) => void setCrashReports(next)}
+          label={t('settingsSupport.crashReports')}
+        />
+      </div>
     </SettingsCard>
   );
 }

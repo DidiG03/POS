@@ -210,6 +210,14 @@ async function loadSettingsFromDb(): Promise<any> {
   return merged;
 }
 
+/**
+ * The settings as last read, without reading them. For code that cannot
+ * wait for the database (the crash reporter); null before the first read.
+ */
+export function peekCachedSettings(): any | null {
+  return cached;
+}
+
 export const coreServices = {
   async readSettings() {
     if (cached) return cached;

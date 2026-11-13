@@ -702,7 +702,9 @@
     "help": "Download the till's log to send to support when something went wrong. PINs, tokens and keys are masked in it. On each computer, Help → Open Logs Folder shows that app's own log.",
     "downloadLog": "Download till log",
     "logSaved": "Till log saved.",
-    "logFailed": "Could not get the till's log."
+    "logFailed": "Could not get the till's log.",
+    "crashReports": "Send crash reports",
+    "crashReportsHelp": "When an app crashes, a report of the error goes to the OneTap developer so it can be fixed. Staff names, guest details, PINs and keys are removed first."
   },
   "settingsBilling": {
     "title": "Billing",

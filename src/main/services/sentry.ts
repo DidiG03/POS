@@ -3,6 +3,7 @@ import { app } from 'electron';
 import os from 'node:os';
 import { POS_SENTRY_DSN } from '@shared/sentryDsn';
 import { isUnpackagedElectron } from './electronDev';
+import { scrubBreadcrumb, scrubCrashEvent } from '@shared/crashReportScrub';
 
 const IS_DEV = isUnpackagedElectron(
   app.isPackaged,
@@ -10,6 +11,12 @@ const IS_DEV = isUnpackagedElectron(
 );
 
 let enabled = false;
+/** Set by the till from its settings (`setCrashReportGate`); KDS/Admin keep it on. */
+let reportGate: () => boolean = () => true;
+
+export function setCrashReportGate(gate: () => boolean): void {
+  reportGate = gate;
+}
 
 function resolveDsn(): string {
   return String(process.env.SENTRY_DSN || POS_SENTRY_DSN || '').trim();
@@ -29,6 +36,10 @@ export function initSentry(): void {
       release: app.getVersion(),
       debug: IS_DEV && process.env.SENTRY_DEBUG === 'true',
       beforeSend(event, hint) {
+        // The venue can turn reports off (Admin → Updates → Support).
+        if (!reportGate()) return null;
+        // Names, phone numbers and secrets never leave the till.
+        event = scrubCrashEvent(event as any) as typeof event;
         if (IS_DEV) {
           console.error('[Sentry Event (dev mode)]', {
             message: event.message,
@@ -61,6 +72,9 @@ export function initSentry(): void {
         /ResizeObserver loop/,
       ],
       maxBreadcrumbs: IS_DEV ? 100 : 50,
+      beforeBreadcrumb(breadcrumb) {
+        return scrubBreadcrumb(breadcrumb as any) as typeof breadcrumb;
+      },
     });
     enabled = true;
     console.log('[Sentry] Initialized successfully');
@@ -70,16 +84,11 @@ export function initSentry(): void {
   }
 }
 
-export function setSentryUser(
-  userId: number | null,
-  displayName?: string,
-  role?: string,
-): void {
+/** Who was signed in: an id and a role, never a name. */
+export function setSentryUser(userId: number | null, role?: string): void {
   if (!enabled) return;
   try {
-    Sentry.setUser(
-      userId ? { id: String(userId), username: displayName, role } : null,
-    );
+    Sentry.setUser(userId ? { id: String(userId), role } : null);
   } catch (error) {
     console.error('[Sentry] Failed to set user', error);
   }

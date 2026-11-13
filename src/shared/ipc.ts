@@ -149,6 +149,10 @@ export interface SettingsDTO {
   /** Present only in unpackaged `npm run dev`. Omitted from production builds. */
   devEditionSwitch?: boolean;
   tableAreas?: TableAreaDTO[];
+  /** Crash reports to the developer; on unless turned off. */
+  privacy?: {
+    crashReports?: boolean;
+  };
   security?: {
     allowLan?: boolean;
     requirePairingCode?: boolean;

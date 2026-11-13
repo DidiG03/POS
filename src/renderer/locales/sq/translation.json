@@ -702,7 +702,9 @@
     "help": "Shkarko regjistrin e arkës për ta dërguar te mbështetja kur diçka shkoi keq. PIN-et, token-at dhe çelësat janë të maskuar. Në çdo kompjuter, Help → Open Logs Folder tregon regjistrin e atij aplikacioni.",
     "downloadLog": "Shkarko regjistrin e arkës",
     "logSaved": "Regjistri i arkës u ruajt.",
-    "logFailed": "Regjistri i arkës nuk u mor."
+    "logFailed": "Regjistri i arkës nuk u mor.",
+    "crashReports": "Dërgo raportet e gabimeve",
+    "crashReportsHelp": "Kur një aplikacion ndalon, një raport i gabimit shkon te zhvilluesi i OneTap që të rregullohet. Emrat e stafit, të dhënat e klientëve, PIN-et dhe çelësat hiqen më parë."
   },
   "settingsBilling": {
     "title": "Faturimi",

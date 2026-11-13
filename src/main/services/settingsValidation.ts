@@ -230,6 +230,17 @@ export function assertSettingsPatch(
     if (problem) refuse(problem);
   }
 
+  if (has(input, 'privacy')) {
+    const p = input.privacy;
+    if (
+      !p ||
+      typeof p !== 'object' ||
+      (has(p, 'crashReports') && typeof p.crashReports !== 'boolean')
+    ) {
+      refuse('Crash reports: the setting must be on or off.');
+    }
+  }
+
   if (input.security && has(input.security, 'idleLockMinutes')) {
     const problem = idleLockProblem(input.security.idleLockMinutes);
     if (problem) refuse(problem);

@@ -24,6 +24,7 @@ import fs from 'node:fs';
 import dotenv from 'dotenv';
 // Initialize Sentry early (before other imports that might throw)
 import {
+  setCrashReportGate,
   initSentry,
   setSentryUser,
   captureException,
@@ -31,10 +32,11 @@ import {
 } from './services/sentry';
 initSentry();
 import { resolveHostIntent } from '@shared/tableIntent';
-import { coreServices } from './services/core';
+import { coreServices, peekCachedSettings } from './services/core';
 import { verifyManagerPin } from './services/managerPin';
 import { checkPaymentApproval } from './services/paymentApproval';
 import { checkPaymentLines } from './services/paymentLines';
+import { crashReportsAllowed } from '@shared/crashReportScrub';
 import { INVALID_SPLIT, normalizePaymentSplit } from '@shared/paymentSplits';
 import {
   CASH_COUNT_REQUIRED,
@@ -441,6 +443,9 @@ const APP_ICON_PATH = (() => {
 let mainWindow: BrowserWindow | null = null;
 let kdsWindow: BrowserWindow | null = null;
 let reservationWindow: BrowserWindow | null = null;
+
+// Crash reports follow the venue's choice (`privacy.crashReports`).
+setCrashReportGate(() => crashReportsAllowed(peekCachedSettings()));
 
 const isPrimaryInstance = claimSingleInstance();
 
@@ -1874,7 +1879,7 @@ ipcHandle('auth:loginWithPin', async (_e, payload) => {
         createdAt: user.createdAt.toISOString(),
         sessionToken: await createSession(_e.sender.id, user),
       };
-      setSentryUser(user.id, user.displayName, user.role);
+      setSentryUser(user.id, user.role);
       addBreadcrumb('User logged in', 'auth', 'info');
       return userData;
     }

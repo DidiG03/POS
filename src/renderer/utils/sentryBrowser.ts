@@ -1,4 +1,9 @@
 import { POS_SENTRY_DSN } from '@shared/sentryDsn';
+import {
+  crashReportsAllowed,
+  scrubBreadcrumb,
+  scrubCrashEvent,
+} from '@shared/crashReportScrub';
 
 /**
  * Only the two calls we make. Holding the whole `@sentry/browser` namespace
@@ -13,6 +18,17 @@ type SentryApi = {
 };
 
 let sentry: SentryApi | null = null;
+/** The venue's choice (`privacy.crashReports`); on until read otherwise. */
+let reportsAllowed = true;
+
+async function syncReportsAllowed(): Promise<void> {
+  try {
+    const s = await (window as any).api?.settings?.get?.();
+    if (s) reportsAllowed = crashReportsAllowed(s);
+  } catch {
+    // keep the last known choice
+  }
+}
 let loading: Promise<SentryApi | null> | null = null;
 const queued: Array<{ error: unknown; extra?: Record<string, unknown> }> = [];
 
@@ -94,6 +110,11 @@ export function initRendererSentry(): void {
   if (w.__posSentryInit) return;
   w.__posSentryInit = true;
 
+  void syncReportsAllowed();
+  window.addEventListener('pos:settingsChanged', () => {
+    void syncReportsAllowed();
+  });
+
   loading = import('@sentry/browser')
     .then(({ init, captureException }) => {
       try {
@@ -121,10 +142,16 @@ export function initRendererSentry(): void {
           // A 401 from the till already forced a logout to the PIN screen;
           // a background call that missed its catch is not a bug report.
           beforeSend(event, hint) {
+            if (!reportsAllowed) return null;
             const status = Number(
               (hint?.originalException as { status?: unknown } | null)?.status,
             );
-            return status === 401 ? null : event;
+            if (status === 401) return null;
+            // Names, phone numbers and secrets never leave the device.
+            return scrubCrashEvent(event as any) as typeof event;
+          },
+          beforeBreadcrumb(breadcrumb) {
+            return scrubBreadcrumb(breadcrumb as any) as typeof breadcrumb;
           },
         });
         const api: SentryApi = { captureException };
