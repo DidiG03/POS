@@ -41,8 +41,8 @@ function fakeDb(opts: { failCreates?: number } = {}) {
     },
     user: {
       findMany: vi.fn(async () => [
-        { id: 3, displayName: 'Ben' },
-        { id: 1, displayName: 'Boss' },
+        { id: 3, displayName: 'Ben', role: 'WAITER' },
+        { id: 1, displayName: 'Boss', role: 'ADMIN' },
       ]),
     },
   };
@@ -77,6 +77,32 @@ describe('recordBillEvent', () => {
       source: 'phone',
       createdAt: at,
     });
+  });
+
+  it('names an admin as the approver of their own discount', async () => {
+    const db = fakeDb();
+    await recordBillEvent(
+      { kind: 'DISCOUNT', area: 'Main', tableLabel: 'T1', actorUserId: 1 },
+      { db },
+    );
+    expect(db.rows[0]).toMatchObject({ approvedById: 1, approverName: 'Boss' });
+    // A waiter's discount with no approval stays that way.
+    await recordBillEvent(
+      { kind: 'DISCOUNT', area: 'Main', tableLabel: 'T1', actorUserId: 3 },
+      { db },
+    );
+    expect(db.rows[1].approvedById).toBeNull();
+    // A corrected price is not something anyone approves.
+    await recordBillEvent(
+      {
+        kind: 'PRICE_CORRECTED',
+        area: 'Main',
+        tableLabel: 'T1',
+        actorUserId: 1,
+      },
+      { db },
+    );
+    expect(db.rows[2].approvedById).toBeNull();
   });
 
   it('tries once more when the write fails', async () => {

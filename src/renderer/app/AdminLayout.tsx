@@ -18,6 +18,7 @@ import {
 import {
   IconBell,
   IconBox,
+  IconReceipt,
   IconChart,
   IconGrid,
   IconLogout,
@@ -162,6 +163,11 @@ export default function AdminLayout() {
         icon: <IconMenuBook />,
       },
       { to: '/admin/stock', labelKey: 'adminLayout.stock', icon: <IconBox /> },
+      {
+        to: '/admin/bill-events',
+        labelKey: 'adminLayout.billEvents',
+        icon: <IconReceipt />,
+      },
       {
         to: '/admin/settings',
         labelKey: 'adminLayout.settings',
@@ -427,7 +433,9 @@ export default function AdminLayout() {
                 )
               }
             >
-              <span className="inline-flex [&_.pos-icon]:size-5">{item.icon}</span>
+              <span className="inline-flex [&_.pos-icon]:size-5">
+                {item.icon}
+              </span>
               <span className="max-w-full truncate">{t(item.labelKey)}</span>
             </NavLink>
           ))}

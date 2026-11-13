@@ -54,6 +54,9 @@ const AdminSettingsPage = lazyPage(
 );
 const AdminMenuPage = lazyPage(() => import('./app/pages/AdminMenuPage'));
 const AdminStockPage = lazyPage(() => import('./app/pages/AdminStockPage'));
+const AdminBillEventsPage = lazyPage(
+  () => import('./app/pages/AdminBillEventsPage'),
+);
 const AdminReviewPage = lazyPage(() => import('./app/pages/AdminReviewPage'));
 const KdsPage = lazyPage(() => import('./app/pages/KdsPage'));
 const KdsSetupPage = lazyPage(() => import('./app/pages/KdsSetupPage'));
@@ -589,6 +592,7 @@ export const routes: RouteObject[] = [
       },
       { path: 'menu', element: withSuspense(<AdminMenuPage />) },
       { path: 'stock', element: withSuspense(<AdminStockPage />) },
+      { path: 'bill-events', element: withSuspense(<AdminBillEventsPage />) },
       { path: 'settings', element: withSuspense(<AdminSettingsPage />) },
     ],
   },

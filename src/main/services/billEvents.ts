@@ -71,13 +71,19 @@ type Db = {
   user: {
     findMany: (
       args: any,
-    ) => Promise<Array<{ id: number; displayName: string }>>;
+    ) => Promise<Array<{ id: number; displayName: string; role?: string }>>;
   };
 };
 
 export type BillEventDeps = { db?: Db; now?: () => Date };
 
 const MAX_DETAILS_CHARS = 8000;
+const SELF_APPROVED_KINDS = new Set<BillEventKind>([
+  'VOID_ITEM',
+  'VOID_TICKET',
+  'DISCOUNT',
+  'SERVICE_CHARGE_REMOVED',
+]);
 const MAX_LINES = 60;
 
 function database(deps?: BillEventDeps): Db {
@@ -142,17 +148,31 @@ export async function recordBillEvent(
 ): Promise<boolean> {
   const db = database(deps);
   const actorUserId = userId(input.actorUserId);
-  const approvedById = userId(input.approvedById);
+  let approvedById = userId(input.approvedById);
   const names = new Map<number, string>();
+  const roles = new Map<number, string>();
   const ids = [actorUserId, approvedById].filter((n): n is number => n != null);
   if (ids.length) {
     const users = await db.user
       .findMany({
         where: { id: { in: ids } },
-        select: { id: true, displayName: true },
+        select: { id: true, displayName: true, role: true },
       })
       .catch(() => []);
-    for (const u of users) names.set(Number(u.id), String(u.displayName || ''));
+    for (const u of users) {
+      names.set(Number(u.id), String(u.displayName || ''));
+      roles.set(Number(u.id), String(u.role || '').toUpperCase());
+    }
+  }
+  // An admin needs nobody's approval for their own discount or void: the
+  // record names them as the approver rather than saying there was none.
+  if (
+    !approvedById &&
+    actorUserId &&
+    roles.get(actorUserId) === 'ADMIN' &&
+    SELF_APPROVED_KINDS.has(input.kind)
+  ) {
+    approvedById = actorUserId;
   }
   const amount = Number(input.amount);
   const data = {

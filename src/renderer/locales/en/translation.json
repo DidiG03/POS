@@ -311,7 +311,54 @@
     "connLatency": "Latency: {{ms}}ms{{extra}}",
     "connLatencyTooltip": "Latency: {{ms}} ms",
     "connLatencyWithLast": "Latency: {{ms}} ms • Last checked: {{when}}",
-    "changeTill": "Change POS"
+    "changeTill": "Change POS",
+    "billEvents": "Voids & discounts"
+  },
+  "adminBillEvents": {
+    "title": "Voids & discounts",
+    "help": "Everything taken off a bill, kept permanently: who did it, who approved it, and how much. Tap a row for the full detail.",
+    "period": "Period",
+    "type": "Type",
+    "person": "Person",
+    "anyone": "Anyone",
+    "summary": "{{count}} events · {{amount}}",
+    "andMore": "(more below)",
+    "emptyTitle": "Nothing taken off",
+    "emptyBody": "No voids, discounts or corrections in this period.",
+    "loadMore": "Load older",
+    "automatic": "Automatic (till)",
+    "fromPhone": "phone",
+    "noApproval": "No approval",
+    "col": {
+      "when": "When",
+      "what": "What",
+      "table": "Table",
+      "who": "Who",
+      "approvedBy": "Approved by",
+      "amount": "Amount"
+    },
+    "preset": {
+      "today": "Today",
+      "yesterday": "Yesterday",
+      "last7": "Last 7 days",
+      "last30": "Last 30 days"
+    },
+    "filter": {
+      "ALL": "All types",
+      "VOIDS": "Voids",
+      "DISCOUNT": "Discounts",
+      "SERVICE_CHARGE_REMOVED": "Service charge removed",
+      "PRICE_CORRECTED": "Prices corrected",
+      "AUTO_VOID": "Automatic voids"
+    },
+    "kind": {
+      "VOID_ITEM": "Item voided",
+      "VOID_TICKET": "Table voided",
+      "AUTO_VOID": "Table voided automatically",
+      "DISCOUNT": "Discount",
+      "SERVICE_CHARGE_REMOVED": "Service charge removed",
+      "PRICE_CORRECTED": "Price corrected by the till"
+    }
   },
   "login": {
     "pinTooShort": "Enter your PIN",

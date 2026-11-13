@@ -311,7 +311,54 @@
     "connLatency": "Vonesa: {{ms}}ms{{extra}}",
     "connLatencyTooltip": "Vonesa: {{ms}} ms",
     "connLatencyWithLast": "Vonesa: {{ms}} ms • Kontrolluar: {{when}}",
-    "changeTill": "Ndrysho POS"
+    "changeTill": "Ndrysho POS",
+    "billEvents": "Anulime & zbritje"
+  },
+  "adminBillEvents": {
+    "title": "Anulime & zbritje",
+    "help": "Gjithçka që është hequr nga një faturë, e ruajtur përgjithmonë: kush e bëri, kush e miratoi dhe sa. Prek një rresht për detajet e plota.",
+    "period": "Periudha",
+    "type": "Lloji",
+    "person": "Personi",
+    "anyone": "Kushdo",
+    "summary": "{{count}} ngjarje · {{amount}}",
+    "andMore": "(më shumë më poshtë)",
+    "emptyTitle": "Asgjë e hequr",
+    "emptyBody": "Nuk ka anulime, zbritje apo korrigjime në këtë periudhë.",
+    "loadMore": "Ngarko më të vjetrat",
+    "automatic": "Automatik (arka)",
+    "fromPhone": "telefon",
+    "noApproval": "Pa miratim",
+    "col": {
+      "when": "Kur",
+      "what": "Çfarë",
+      "table": "Tavolina",
+      "who": "Kush",
+      "approvedBy": "Miratuar nga",
+      "amount": "Shuma"
+    },
+    "preset": {
+      "today": "Sot",
+      "yesterday": "Dje",
+      "last7": "7 ditët e fundit",
+      "last30": "30 ditët e fundit"
+    },
+    "filter": {
+      "ALL": "Të gjitha llojet",
+      "VOIDS": "Anulime",
+      "DISCOUNT": "Zbritje",
+      "SERVICE_CHARGE_REMOVED": "Shërbimi i hequr",
+      "PRICE_CORRECTED": "Çmime të korrigjuara",
+      "AUTO_VOID": "Anulime automatike"
+    },
+    "kind": {
+      "VOID_ITEM": "Artikull i anuluar",
+      "VOID_TICKET": "Tavolinë e anuluar",
+      "AUTO_VOID": "Tavolinë e anuluar automatikisht",
+      "DISCOUNT": "Zbritje",
+      "SERVICE_CHARGE_REMOVED": "Shërbimi i hequr",
+      "PRICE_CORRECTED": "Çmim i korrigjuar nga arka"
+    }
   },
   "login": {
     "pinTooShort": "Shkruani PIN-in",
