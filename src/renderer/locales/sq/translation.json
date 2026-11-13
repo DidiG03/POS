@@ -690,6 +690,13 @@
     "kdsSent": "Komanda e përditësimit u dërgua",
     "kdsIdle": "Pret komandën e përditësimit"
   },
+  "settingsSupport": {
+    "title": "Mbështetje",
+    "help": "Shkarko regjistrin e arkës për ta dërguar te mbështetja kur diçka shkoi keq. PIN-et, token-at dhe çelësat janë të maskuar. Në çdo kompjuter, Help → Open Logs Folder tregon regjistrin e atij aplikacioni.",
+    "downloadLog": "Shkarko regjistrin e arkës",
+    "logSaved": "Regjistri i arkës u ruajt.",
+    "logFailed": "Regjistri i arkës nuk u mor."
+  },
   "settingsBilling": {
     "title": "Faturimi",
     "help": "Abonimi Stripe për këtë kasa. Ri-instalo me të njëjtin email ose ngjit çelësin e licencës për ta rikthyer pa paguar sërish.",

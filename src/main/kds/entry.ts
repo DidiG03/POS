@@ -41,8 +41,10 @@ import {
   registerCompanionLanIpc,
 } from '../services/companionLanProxy';
 import { installWindowGuards } from '../services/windowGuards';
+import { startAppLog } from '../services/appLog';
 
 app.setName('OneTap KDS');
+startAppLog('kds');
 initSentry();
 
 // The POS main process installs these (see src/main/index.ts); this

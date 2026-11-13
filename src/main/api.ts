@@ -155,6 +155,10 @@ import { findStaleBillPayment } from './services/staleBill';
 import { checkPaymentApproval } from './services/paymentApproval';
 import { stampPaymentForSession } from './services/paymentStamp';
 import { checkBillSlip, UNKNOWN_SLIP_KIND } from './services/billSlip';
+import { appLogTail } from './services/appLog';
+
+/** How much of the till's log an admin downloads at once. */
+const TILL_LOG_DOWNLOAD_BYTES = 3 * 1024 * 1024;
 import {
   billEventLines,
   billEventLinesAmount,
@@ -4649,6 +4653,28 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             revenueTodayVat,
             fiscalEnabled: fiscalVatEnabled,
           },
+          corsOrigin,
+        );
+      }
+      // The newest part of the till's log file, for support (`appLog.ts`).
+      // Secrets are masked when each line is written.
+      if (req.method === 'GET' && pathname === '/admin/till-log') {
+        const tail = appLogTail(TILL_LOG_DOWNLOAD_BYTES);
+        if (!tail) {
+          return send(
+            res,
+            404,
+            { ok: false, error: 'This till is not keeping a log file.' },
+            corsOrigin,
+          );
+        }
+        logSecurityEvent('till_log_downloaded', {
+          userId: auth?.userId ?? null,
+        });
+        return send(
+          res,
+          200,
+          { ok: true, name: tail.name, text: tail.text },
           corsOrigin,
         );
       }

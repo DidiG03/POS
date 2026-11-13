@@ -52,6 +52,7 @@ import {
   type StoredFiscalResult,
   type FiscalHoldKind,
 } from './claims';
+import { logIgnored } from '../logIgnored';
 
 export {
   testEasyPosConnection,
@@ -221,7 +222,7 @@ async function reportDraftAdjustment(
     message: `${detail} It was filed on VAT band ${info.vatCode}, split the same way as the items, so the tax service gets those bands and not the default rate.`,
     actorUserId: Number((payload.meta as any)?.userId || 0) || undefined,
     type: 'SECURITY',
-  }).catch(() => undefined);
+  }).catch(logIgnored('index:224', undefined));
 }
 
 function withFiscalMeta(
@@ -316,7 +317,7 @@ async function ensureCashBalanceDeclared(
         ' · Check the opening float in Settings › Fiskalizimi, then take a cash payment to retry.',
       actorUserId: Number(meta.userId || 0) || undefined,
       type: 'SECURITY',
-    }).catch(() => undefined);
+    }).catch(logIgnored('index:319', undefined));
   } catch (e: any) {
     // A balance problem must never be the reason a payment fails.
     console.warn(
@@ -419,7 +420,7 @@ export async function fiscalizePaymentOnce(
         tableLabel,
         actorUserId: Number(meta.userId || 0) || undefined,
         message,
-      }).catch(() => undefined);
+      }).catch(logIgnored('index:422', undefined));
     }
     return {
       kind: 'needs-review',
@@ -611,7 +612,7 @@ async function registerUnderClaim(input: {
         tableLabel,
         actorUserId: Number(meta.userId || 0) || undefined,
         message: input.holdReason,
-      }).catch(() => undefined);
+      }).catch(logIgnored('index:614', undefined));
       return {
         kind: 'deferred',
         payload: pendingPayload(FISCAL_REVIEW_PENDING_WARNING),
@@ -622,7 +623,7 @@ async function registerUnderClaim(input: {
       docId,
       decision.attemptId,
       input.holdReason,
-    ).catch(() => undefined);
+    ).catch(logIgnored('index:625', undefined));
     return {
       kind: 'retryable',
       message: `This payment's invoice could not be queued for review, so the sale was not recorded. Try again. ${input.holdReason}`,
@@ -660,7 +661,8 @@ async function registerUnderClaim(input: {
   // A queued invoice whose earlier send could not be confirmed is checked
   // against easyPos before it is sent again.
   const statusFirst =
-    (await readFiscalClaim(docId).catch(() => null))?.checkStatusFirst === true;
+    (await readFiscalClaim(docId).catch(logIgnored('index:663', null)))
+      ?.checkStatusFirst === true;
 
   try {
     const result = statusFirst
@@ -759,7 +761,7 @@ async function registerUnderClaim(input: {
             tableLabel,
             actorUserId: Number(meta.userId || 0) || undefined,
             message: `Payment taken although fiskalizimi refused the invoice: ${message} The invoice is kept on the review list; fix the cause in Settings › Fiskalizimi and send it again from there.`,
-          }).catch(() => undefined);
+          }).catch(logIgnored('index:762', undefined));
           return {
             kind: 'deferred',
             payload: withFiscalMeta(
@@ -784,7 +786,7 @@ async function registerUnderClaim(input: {
           `${area || tableLabel ? ` (${[area, tableLabel].filter(Boolean).join(' ')})` : ''}: ${message}`,
         actorUserId: Number(meta.userId || 0) || undefined,
         type: 'SECURITY',
-      }).catch(() => undefined);
+      }).catch(logIgnored('index:787', undefined));
       return { kind: 'rejected', message };
     }
     // easyPos may or may not have filed it (a 5xx, a timeout, a dropped
@@ -811,7 +813,7 @@ async function registerUnderClaim(input: {
           tableLabel,
           actorUserId: Number(meta.userId || 0) || undefined,
           message: deferred.reason,
-        }).catch(() => undefined);
+        }).catch(logIgnored('index:814', undefined));
       }
       return {
         kind: 'deferred',
@@ -934,7 +936,7 @@ export async function flagVoidAfterFiscalization(input: {
           tableLabel: input.tableLabel,
           actorUserId: input.actorUserId,
           message: `A ticket was voided while its invoice was being sent (${input.reason}).`,
-        }).catch(() => undefined);
+        }).catch(logIgnored('index:937', undefined));
         return true;
       }
       if (outcome === 'registered') {

@@ -1829,6 +1829,9 @@ export function installBrowserLanApi(): void {
           `/admin/sales-trends?range=${encodeURIComponent(range)}`,
         );
       },
+      async getTillLog() {
+        return await goLan('/admin/till-log');
+      },
       async listBillEvents(input: any) {
         const q = new URLSearchParams();
         if (input?.from) q.set('from', String(input.from));

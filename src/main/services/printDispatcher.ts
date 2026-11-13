@@ -48,6 +48,7 @@ import {
   notifyStationPrintFailed,
   notifyStationPrintQueued,
 } from './printJobNotify';
+import { logIgnored } from './logIgnored';
 
 export type PrinterMode = 'NETWORK' | 'SYSTEM' | 'SERIAL';
 
@@ -351,11 +352,11 @@ async function orderPayloadItemsForPrint(
             where: { sku: { in: skus } },
             select: { sku: true, categoryId: true },
           } as any)
-          .catch(() => [])
+          .catch(logIgnored('printDispatcher:354', []))
       : [],
     prisma.category
       .findMany({ select: { id: true, sortOrder: true } } as any)
-      .catch(() => []),
+      .catch(logIgnored('printDispatcher:358', [])),
   ]);
   const categoryOrder = buildCategoryDisplayOrder(categories as any[]);
   const skuToCategoryId: Record<string, number> = {};
@@ -406,11 +407,11 @@ async function buildOrderBuckets(
             where: { sku: { in: skus } },
             select: { sku: true, station: true, categoryId: true },
           } as any)
-          .catch(() => [])
+          .catch(logIgnored('printDispatcher:409', []))
       : [],
     prisma.category
       .findMany({ select: { id: true, sortOrder: true } } as any)
-      .catch(() => []),
+      .catch(logIgnored('printDispatcher:413', [])),
   ]);
   const categoryOrder = buildCategoryDisplayOrder(categories as any[]);
   const bySku = new Map<string, { station?: string; categoryId?: number }>();
@@ -689,7 +690,7 @@ export async function loadDuePrintRetries(limit = 10) {
       orderBy: { nextAttemptAt: 'asc' },
       take: limit,
     })
-    .catch(() => []);
+    .catch(logIgnored('printDispatcher:692', []));
 }
 
 /**
@@ -708,7 +709,7 @@ export async function nextPendingRetryAt(): Promise<Date | null> {
       orderBy: { nextAttemptAt: 'asc' },
       select: { nextAttemptAt: true },
     })
-    .catch(() => null);
+    .catch(logIgnored('printDispatcher:711', null));
   if (!row) return null;
   return row.nextAttemptAt ?? new Date(0);
 }

@@ -23,6 +23,7 @@ import crypto from 'node:crypto';
 import { prisma } from '@db/client';
 import { notifyAdminsAndActor } from '../adminAlerts';
 import type { FiscalDocInfo } from './completion';
+import { logIgnored } from '../logIgnored';
 
 const KEY_PREFIX = 'fiscal:claim:';
 /** First key past every claim — `;` sorts right after `:`. */
@@ -378,7 +379,7 @@ export async function readFiscalClaim(
   if (!idempotencyKey) return null;
   const row = await prisma.syncState
     .findUnique({ where: { key: fiscalClaimKey(idempotencyKey) } })
-    .catch(() => null);
+    .catch(logIgnored('claims:381', null));
   return parseRecord((row as any)?.valueJson);
 }
 
@@ -410,7 +411,7 @@ export async function claimFiscalRegistration(
   if (!idempotencyKey) {
     throw new Error('A fiscal claim requires an idempotency key.');
   }
-  void pruneFiscalClaims().catch(() => undefined);
+  void pruneFiscalClaims().catch(logIgnored('claims:413', undefined));
 
   const attemptId = newAttemptId();
   const key = fiscalClaimKey(idempotencyKey);
@@ -811,7 +812,9 @@ export async function commitDeferredFiscalClaim(
     } catch {
       // The read-back is the proof, not the absence of a throw.
     }
-    const saved = await readFiscalClaim(idempotencyKey).catch(() => null);
+    const saved = await readFiscalClaim(idempotencyKey).catch(
+      logIgnored('claims:814', null),
+    );
     if (saved?.state === 'DEFERRED' && saved.draft != null) return true;
   }
   // FAILED lets the next tap send without asking first, so it is only safe
@@ -1250,7 +1253,7 @@ export async function flagFiscalCorrectionRequired(input: {
       : `Fiskalizimi needs a ${doc}${where ? ` on ${where}` : ''}. File it in Settings › Fiskalizimi.`,
     actorUserId: input.actorUserId,
     type: 'SECURITY',
-  }).catch(() => undefined);
+  }).catch(logIgnored('claims:1253', undefined));
   return true;
 }
 

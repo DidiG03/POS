@@ -690,6 +690,13 @@
     "kdsSent": "Update command sent",
     "kdsIdle": "Waits for an update command"
   },
+  "settingsSupport": {
+    "title": "Support",
+    "help": "Download the till's log to send to support when something went wrong. PINs, tokens and keys are masked in it. On each computer, Help → Open Logs Folder shows that app's own log.",
+    "downloadLog": "Download till log",
+    "logSaved": "Till log saved.",
+    "logFailed": "Could not get the till's log."
+  },
   "settingsBilling": {
     "title": "Billing",
     "help": "Stripe subscription for this till. Reinstall with the same email or paste the license key to restore without paying again.",

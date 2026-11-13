@@ -29,6 +29,7 @@ import {
   listFiscalClaimsDeferred,
   listFiscalClaimsNeedingReview,
 } from './fiscal/claims';
+import { logIgnored } from './logIgnored';
 
 const LAST_KEY = 'z:last';
 const recordKey = (n: number) => `z:report:${n}`;
@@ -173,10 +174,16 @@ export function correctionIsCashRefund(c: {
 
 type Stored = { number: number; to: string };
 
-async function readJson<T>(key: string): Promise<T | null> {
-  const row = await prisma.syncState
-    .findUnique({ where: { key } })
-    .catch(() => null);
+async function readJson<T>(
+  key: string,
+  opts?: { strict?: boolean },
+): Promise<T | null> {
+  const read = prisma.syncState.findUnique({ where: { key } });
+  // Strict where a wrong "nothing there" would do harm: the last Z read as
+  // missing numbered the next one 1 and wrote it over report 1.
+  const row = opts?.strict
+    ? await read
+    : await read.catch(logIgnored('zReport:readJson', null));
   return ((row as any)?.valueJson as T) ?? null;
 }
 
@@ -524,7 +531,7 @@ export async function issueZReport(input: {
   confirmEmpty?: boolean;
 }): Promise<IssueZResult> {
   return zLock.runExclusive('z', async () => {
-    const last = await readJson<Stored>(LAST_KEY);
+    const last = await readJson<Stored>(LAST_KEY, { strict: true });
     const lastTo = last?.to ? new Date(last.to) : null;
     const hasLast = Boolean(lastTo && Number.isFinite(lastTo.getTime()));
     // Always from where the last Z ended, even when the clock has not moved
@@ -591,7 +598,10 @@ export async function reprintZReport(
 ): Promise<{ ok: boolean; printed?: boolean; error?: string }> {
   const z = await readZReport(n);
   if (!z) return { ok: false, error: `There is no Z report number ${n}.` };
-  return { ok: true, printed: await print(z, true).catch(() => false) };
+  return {
+    ok: true,
+    printed: await print(z, true).catch(logIgnored('zReport:594', false)),
+  };
 }
 
 export async function printZReport(

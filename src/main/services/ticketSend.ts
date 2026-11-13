@@ -46,6 +46,7 @@ import { writeTicketSnapshot, type StockConsumeInput } from './ticketLogWrite';
 import { OutOfStockError } from './menuStock';
 import { repriceLinesFromMenu } from './linePricing';
 import { checkFloorTable } from './floorTables';
+import { logIgnored } from './logIgnored';
 
 export type TicketSendInput = {
   userId: number;
@@ -179,7 +180,7 @@ export async function closedSittingLines(input: {
         where: { idempotencyKey: { in: [...foreignKeys].slice(0, 50) } } as any,
         select: { sessionKey: true, idempotencyKey: true } as any,
       })
-      .catch(() => [])) as Array<{
+      .catch(logIgnored('ticketSend:182', []))) as Array<{
       sessionKey?: string | null;
       idempotencyKey?: string | null;
     }>;
@@ -195,7 +196,7 @@ export async function closedSittingLines(input: {
       take: 40,
       select: { id: true, sessionKey: true, itemsJson: true } as any,
     } as any)
-    .catch(() => [])) as Array<{
+    .catch(logIgnored('ticketSend:198', []))) as Array<{
     id: number;
     sessionKey?: string | null;
     itemsJson?: unknown;
@@ -256,7 +257,7 @@ export function ticketCapturedAt(
 async function isAdminUser(userId: number): Promise<boolean> {
   const user = await prisma.user
     .findUnique({ where: { id: Number(userId) } })
-    .catch(() => null);
+    .catch(logIgnored('ticketSend:259', null));
   return Boolean(
     user && String((user as any).role || '').toUpperCase() === 'ADMIN',
   );
@@ -387,7 +388,10 @@ export async function priceSendLinesFromMenu(input: {
       },
       select: { sku: true, name: true },
     } as any)
-    .catch(() => [])) as Array<{ sku: string; name: string }>;
+    .catch(logIgnored('ticketSend:390', []))) as Array<{
+    sku: string;
+    name: string;
+  }>;
   for (const r of rows) names.set(String(r.sku), String(r.name));
   const unknown = new Set(
     priced.issues
@@ -455,7 +459,7 @@ export async function recordTicketSend(
     if (idempotencyKey) {
       const existing = await prisma.ticketLog
         .findFirst({ where: { idempotencyKey } as any })
-        .catch(() => null);
+        .catch(logIgnored('ticketSend:458', null));
       if (existing) return { ok: true as const, written: false as const };
     }
 
@@ -599,7 +603,7 @@ export async function recordTicketSend(
       if (!(await isAdminUser(input.userId))) {
         const owner = await prisma.user
           .findUnique({ where: { id: ownerId } })
-          .catch(() => null);
+          .catch(logIgnored('ticketSend:602', null));
         const ownerName = (owner as any)?.displayName || null;
         return {
           ok: false as const,
@@ -666,7 +670,9 @@ export async function recordTicketSend(
 
     const sessionKey = sameSitting
       ? sessionKeyBefore
-      : await getCurrentTableSessionKey(area, tableLabel).catch(() => null);
+      : await getCurrentTableSessionKey(area, tableLabel).catch(
+          logIgnored('ticketSend:669', null),
+        );
     let outcome: 'written' | 'duplicate';
     try {
       outcome = await writeTicketSnapshot({

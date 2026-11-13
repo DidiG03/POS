@@ -9,6 +9,7 @@ const h = vi.hoisted(() => ({
   corrections: [] as any[],
   billsPrinted: 0,
   failPayments: false,
+  failLastRead: false,
   failTransaction: false,
   declarations: [] as any[],
   fetchArgs: [] as Array<{ from: Date; to: Date }>,
@@ -21,8 +22,14 @@ const h = vi.hoisted(() => ({
 vi.mock('@db/client', () => ({
   prisma: {
     syncState: {
-      findUnique: async ({ where }: any) =>
-        h.store.has(where.key) ? { valueJson: h.store.get(where.key) } : null,
+      findUnique: async ({ where }: any) => {
+        if (h.failLastRead && where.key === 'z:last') {
+          throw new Error('SQLITE_BUSY');
+        }
+        return h.store.has(where.key)
+          ? { valueJson: h.store.get(where.key) }
+          : null;
+      },
       // Like Prisma: nothing is written until it is awaited or run in a
       // transaction.
       upsert: ({ where, update }: any) => {
@@ -127,6 +134,7 @@ beforeEach(() => {
   h.corrections = [{ kind: 'CANCEL', amountDelta: -500 }];
   h.failPayments = false;
   h.failTransaction = false;
+  h.failLastRead = false;
   const at = new Date().toISOString();
   h.declarations = [
     { at, kind: 'deposit', amount: 2000, ok: true, docId: 'cash-a' },
@@ -582,6 +590,17 @@ describe('Z report failures and refunds', () => {
     h.failTransaction = false;
     const r = await issueZReport({ actorUserId: 1, print: noPrint });
     expect('report' in r && r.report.number).toBe(1);
+  });
+
+  it('never renumbers from 1 when the last Z cannot be read', async () => {
+    await issueZReport({ actorUserId: 1, print: noPrint });
+    const first = structuredClone(h.store.get('z:report:1'));
+    h.failLastRead = true;
+    await expect(
+      issueZReport({ actorUserId: 1, print: noPrint, confirmEmpty: true }),
+    ).rejects.toThrow(/SQLITE_BUSY/);
+    expect(h.store.get('z:report:1')).toEqual(first);
+    expect(h.store.has('z:report:2')).toBe(false);
   });
 
   it('takes cash refunds off the cash expected in the drawer', async () => {

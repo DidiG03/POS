@@ -35,6 +35,7 @@ import {
   repriceLinesFromMenu,
   type LinePriceIssue,
 } from './linePricing';
+import { logIgnored } from './logIgnored';
 
 export interface EnforceTotalsResult {
   /**
@@ -106,7 +107,7 @@ async function recordMismatch(
         .create({
           data: { userId, type: 'SECURITY' as any, message } as any,
         })
-        .catch(() => {});
+        .catch(logIgnored('paymentTotals:109', undefined));
     }
   } catch {
     // Audit is advisory — never block the sale on it.

@@ -65,6 +65,7 @@ import {
 import { fiscalTinFromSettings, tinFromVerifyUrl } from '@shared/fiscalReceipt';
 import type { FiscalDocInfo } from './fiscal/completion';
 import { restockMenuStockForLines } from './menuStock';
+import { logIgnored } from './logIgnored';
 
 export type FiscalSaleRow = {
   orderId: number;
@@ -309,7 +310,9 @@ async function fileCancellation(input: {
   const docId = existing || newDocId('cancellation');
   if (!existing) {
     // Persisted BEFORE the POST, like every other fiscal docId.
-    await writeCancellationDocId(input.orderId, docId).catch(() => undefined);
+    await writeCancellationDocId(input.orderId, docId).catch(
+      logIgnored('saleCorrection:312', undefined),
+    );
   }
 
   try {
@@ -479,7 +482,7 @@ async function stampFiledCorrection(
         correctionNivf: String(filed.nivf || '').trim() || null,
       },
     })
-    .catch(() => undefined);
+    .catch(logIgnored('saleCorrection:482', undefined));
 }
 
 const CANCELLATION_DOC_KEY = (orderId: number) =>
@@ -499,7 +502,7 @@ async function writeDocId(key: string, docId: string): Promise<void> {
 async function readDocId(key: string): Promise<string> {
   const row = await prisma.syncState
     .findUnique({ where: { key } })
-    .catch(() => null);
+    .catch(logIgnored('saleCorrection:502', null));
   return String((row as any)?.valueJson?.docId || '').trim();
 }
 
@@ -555,7 +558,9 @@ async function fileCorrective(input: {
   const existing = await readDocId(key);
   const docId = existing || newDocId('invoice');
   if (!existing) {
-    await writeDocId(key, docId).catch(() => undefined);
+    await writeDocId(key, docId).catch(
+      logIgnored('saleCorrection:558', undefined),
+    );
   }
 
   try {
@@ -715,7 +720,7 @@ async function hasCorrectiveAgainst(
     .findMany({
       where: { key: { startsWith: `${CORRECTION_RETRY_PREFIX}${orderId}:` } },
     })
-    .catch(() => [])) as any[];
+    .catch(logIgnored('saleCorrection:718', []))) as any[];
   return queued.some((row) => {
     try {
       const raw = row?.valueJson;
@@ -866,7 +871,7 @@ async function reverseUnsentInvoice(input: {
         // deferred loop imports this module the same way.
         await import('./fiscal/deferred')
           .then((m) => m.stampFiscalIdentifiersOnSale(input.saleKey, r))
-          .catch(() => undefined);
+          .catch(logIgnored('saleCorrection:869', undefined));
         return {
           state: 'SENT',
           docId: input.claimKey,
@@ -1052,7 +1057,7 @@ async function readCorrectionKey(
 ): Promise<ApplyCorrectionResult | null> {
   const row = await prisma.syncState
     .findUnique({ where: { key: `${CORRECTION_KEY_PREFIX}${key}` } })
-    .catch(() => null);
+    .catch(logIgnored('saleCorrection:1055', null));
   const value = (row as any)?.valueJson;
   if (!value || typeof value !== 'object') return null;
   if (value.result && typeof value.result === 'object') {
@@ -1119,7 +1124,7 @@ async function applySaleCorrectionNow(
         },
       } as any,
     })
-    .catch(() => null);
+    .catch(logIgnored('saleCorrection:1122', null));
   if (!order) return { ok: false, error: 'not-found' };
 
   const settings: any = await coreServices.readSettings().catch(() => ({}));
@@ -1255,7 +1260,9 @@ async function applySaleCorrectionNow(
   // then — and when a filed invoice's identifiers never reached the row —
   // the claim is the truth about whether the tax service holds an invoice.
   if (!iic && docId) {
-    const current = await currentClaimForSale(docId).catch(() => null);
+    const current = await currentClaimForSale(docId).catch(
+      logIgnored('saleCorrection:1258', null),
+    );
     if (current && FILED_CLAIM_STATES.has(current.record.state)) {
       iic = String(current.record.result?.nslf || '').trim();
       claimEic = String(current.record.result?.eic || '').trim() || undefined;
@@ -1310,7 +1317,9 @@ async function applySaleCorrectionNow(
   // nothing on the live service to cancel, and sending one would be refused
   // or, worse, mistaken for a real reversal.
   const saleClaim = docId
-    ? await currentClaimForSale(docId).catch(() => null)
+    ? await currentClaimForSale(docId).catch(
+        logIgnored('saleCorrection:1313', null),
+      )
     : null;
   const filedOnTestService = isLeftoverTestWork(
     saleClaim?.record.context?.environment,
@@ -1401,7 +1410,7 @@ async function applySaleCorrectionNow(
         ` · ${plan.amountDelta} · Its invoice was filed on the easyPos test service, so nothing is filed with the tax authority.`,
       actorUserId: Number(input.actorUserId) || undefined,
       type: 'SECURITY',
-    }).catch(() => undefined);
+    }).catch(logIgnored('saleCorrection:1404', undefined));
   } else if (wasFiscalized && docId) {
     if (
       plan.cancelsSale &&
@@ -1460,7 +1469,7 @@ async function applySaleCorrectionNow(
           environment: fiscalConfig(settings).environment,
           amountDelta: plan.amountDelta,
           method: String(payment?.method || 'CASH'),
-        }).catch(() => undefined);
+        }).catch(logIgnored('saleCorrection:1463', undefined));
       }
       needsFiling = await flagFiscalCorrectionRequired({
         idempotencyKey: docId,
@@ -1483,7 +1492,7 @@ async function applySaleCorrectionNow(
           nivf: String(payment?.fiscalNivf || '').trim() || undefined,
           eic: originalEic,
         },
-      }).catch(() => false);
+      }).catch(logIgnored('saleCorrection:1486', false));
     }
   } else if (unsent) {
     // The invoice had not reached the tax service yet. Withdrawn or restated
@@ -1495,7 +1504,7 @@ async function applySaleCorrectionNow(
         ` · ${plan.amountDelta} · Fiskalizimi: ${unsent.detail} · docId ${unsent.docId}`,
       actorUserId: Number(input.actorUserId) || undefined,
       type: 'SECURITY',
-    }).catch(() => undefined);
+    }).catch(logIgnored('saleCorrection:1498', undefined));
   } else {
     // Never fiscalized, so there is no document to correct — but a reversed
     // sale is still something every admin should see.
@@ -1505,7 +1514,7 @@ async function applySaleCorrectionNow(
         ` · ${plan.amountDelta}`,
       actorUserId: Number(input.actorUserId) || undefined,
       type: 'SECURITY',
-    }).catch(() => undefined);
+    }).catch(logIgnored('saleCorrection:1508', undefined));
   }
 
   return {
@@ -1589,7 +1598,7 @@ export async function retryQueuedFiscalCorrections(
   try {
     const rows = (await prisma.syncState
       .findMany({ where: { key: { startsWith: CORRECTION_RETRY_PREFIX } } })
-      .catch(() => [])) as any[];
+      .catch(logIgnored('saleCorrection:1592', []))) as any[];
     // After one finds easyPos unreachable, the rest wait for the next pass
     // rather than each spending a full recovery budget finding the same.
     let unreachable = false;
@@ -1609,7 +1618,7 @@ export async function retryQueuedFiscalCorrections(
       if (isLeftoverTestWork(q.environment, environment)) {
         await prisma.syncState
           .delete({ where: { key: row.key } })
-          .catch(() => undefined);
+          .catch(logIgnored('saleCorrection:1612', undefined));
         continue;
       }
       if (!sameFiscalEnvironment(q.environment, environment)) continue;
@@ -1658,13 +1667,13 @@ export async function retryQueuedFiscalCorrections(
               } as any,
             },
           })
-          .catch(() => undefined);
+          .catch(logIgnored('saleCorrection:1661', undefined));
         continue;
       }
 
       await prisma.syncState
         .delete({ where: { key: row.key } })
-        .catch(() => undefined);
+        .catch(logIgnored('saleCorrection:1667', undefined));
       if (result.state === 'FILED') {
         filed += 1;
         await stampFiledCorrection(q.correctionId, result);
@@ -1674,7 +1683,7 @@ export async function retryQueuedFiscalCorrections(
         await notifyAdminsAndActor({
           message: `Fiskalizimi: the queued ${q.kind === 'CANCEL' ? 'cancellation' : 'corrective invoice'} for sale #${q.orderId} was sent · ${result.detail}`,
           type: 'SECURITY',
-        }).catch(() => undefined);
+        }).catch(logIgnored('saleCorrection:1677', undefined));
       } else {
         // Refused, or the outcome is unknown: that needs a person. The
         // review entry is still open; give it the latest reason.
@@ -1693,5 +1702,5 @@ async function annotateCorrectionReview(
 ): Promise<void> {
   await withFiscalClaimLock(docId, () =>
     annotateFiscalClaimUnlocked(docId, { lastError: detail }),
-  ).catch(() => undefined);
+  ).catch(logIgnored('saleCorrection:1696', undefined));
 }

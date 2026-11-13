@@ -5,6 +5,7 @@ import { getOpenSqliteMode, prisma } from '@db/client';
 import { looksLikeSqliteCiphertext } from './vault/sqliteCipher';
 import { checkLedgerFile } from './ledgerFileCheck';
 import { openLedgerEncryptionKey } from './vault/lifecycle';
+import { logIgnored } from './logIgnored';
 
 export async function getSqliteDbFilePath(): Promise<string | null> {
   try {
@@ -185,7 +186,7 @@ export async function restoreDbBackup(
   }
 
   try {
-    await prisma.$disconnect().catch(() => null);
+    await prisma.$disconnect().catch(logIgnored('dbBackups:188', null));
     fs.copyFileSync(src, dbPath);
     // The old ledger's -wal/-shm must not be replayed onto the restored file.
     for (const side of [`${dbPath}-wal`, `${dbPath}-shm`]) {

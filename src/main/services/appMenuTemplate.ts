@@ -14,6 +14,7 @@ export type AppMenuTemplateOpts = {
   busy?: boolean;
   onCheckForUpdates: () => void;
   onShowTillAddress?: () => void;
+  onOpenLogs?: () => void;
 };
 
 export function updateMenuLabel(opts: {
@@ -111,6 +112,14 @@ export function buildAppMenuTemplate(
     submenu: [
       updateItem(),
       ...(tillAddressItem() ? [tillAddressItem()!] : []),
+      ...(opts.onOpenLogs
+        ? [
+            {
+              label: 'Open Logs Folder',
+              click: () => opts.onOpenLogs?.(),
+            } as MenuItemConstructorOptions,
+          ]
+        : []),
       { type: 'separator' },
       {
         label: `Version ${opts.version}`,

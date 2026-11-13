@@ -39,6 +39,7 @@ import { ensureDailyBalanceForCash } from './balance';
 import { fiscalConfig, latestFiscalSettings } from './config';
 import type { FiscalDocInfo } from './completion';
 import { isLeftoverTestWork, sameFiscalEnvironment } from './environment';
+import { logIgnored } from '../logIgnored';
 
 const LOOP_MS = 20_000;
 const OUTAGE_NOTICE_MS = 30 * 60 * 1000;
@@ -87,7 +88,7 @@ export async function stampFiscalIdentifiersOnSale(
 
   const job = await prisma.printJob
     .findUnique({ where: { idempotencyKey } })
-    .catch(() => null);
+    .catch(logIgnored('deferred:90', null));
   // `idempotencyKey` here is the sale's key (see the caller), which is the
   // claim key unless a correction restated the invoice under a new docId.
   if (job) {
@@ -116,14 +117,14 @@ export async function stampFiscalIdentifiersOnSale(
         where: { id: (job as any).id },
         data: { payloadJson: { ...payload, meta } } as any,
       })
-      .catch(() => undefined);
+      .catch(logIgnored('deferred:119', undefined));
   }
 
   // Cancellations and ticket history read Payment, not PrintJob. Leaving
   // these null after a deferred transmit made later voids look unfiscalized.
   const payment = await prisma.payment
     .findUnique({ where: { idempotencyKey } })
-    .catch(() => null);
+    .catch(logIgnored('deferred:126', null));
   if (!payment) return;
   const metaJson = {
     ...(((payment as any).metaJson as Record<string, unknown>) || {}),
@@ -147,7 +148,7 @@ export async function stampFiscalIdentifiersOnSale(
         metaJson,
       } as any,
     })
-    .catch(() => undefined);
+    .catch(logIgnored('deferred:150', undefined));
 }
 
 /**
@@ -192,7 +193,7 @@ async function noticeOutage(message: string): Promise<void> {
     message:
       'Fiskalizimi is unreachable. Sales continue and will be sent automatically (48-hour window).',
     type: 'SECURITY',
-  }).catch(() => undefined);
+  }).catch(logIgnored('deferred:195', undefined));
 }
 
 async function noticeDeadline(
@@ -213,8 +214,10 @@ async function noticeDeadline(
       ? `Fiskalizimi 48-hour window missed${where ? ` on ${where}` : ''} · docId ${idempotencyKey}. Transmit via SelfCare if automatic retry keeps failing, and notify DPT if the outage itself lasted more than 48 hours.`
       : `Fiskalizimi still pending (${due})${where ? ` on ${where}` : ''} · docId ${idempotencyKey}. The invoice must reach CIS within 48 hours of the sale.`,
     type: 'SECURITY',
-  }).catch(() => undefined);
-  await markFiscalDeferAlert(idempotencyKey, due).catch(() => undefined);
+  }).catch(logIgnored('deferred:216', undefined));
+  await markFiscalDeferAlert(idempotencyKey, due).catch(
+    logIgnored('deferred:217', undefined),
+  );
 }
 
 export async function transmitDueDeferredInvoices(
@@ -255,7 +258,7 @@ export async function transmitDueDeferredInvoices(
             { statusConfirmedAbsent: true },
           ),
         1_000,
-      ).catch(() => false);
+      ).catch(logIgnored('deferred:258', false));
       if (dropped) droppedTest += 1;
       continue;
     }
@@ -305,7 +308,7 @@ export async function transmitDueDeferredInvoices(
     await notifyAdminsAndActor({
       message: `Fiskalizimi: ${droppedTest} invoice(s) queued while the till used the easyPos test service were not sent to the live service.`,
       type: 'SECURITY',
-    }).catch(() => undefined);
+    }).catch(logIgnored('deferred:308', undefined));
   }
   if (
     waitingElsewhere > 0 &&
@@ -315,7 +318,7 @@ export async function transmitDueDeferredInvoices(
     await notifyAdminsAndActor({
       message: `Fiskalizimi: ${waitingElsewhere} invoice(s) were taken on the live easyPos service and are still waiting to be sent. They are not sent to the test service the till now points at — switch Settings › Fiskalizimi back to the live service so they reach the tax authority within 48 hours.`,
       type: 'SECURITY',
-    }).catch(() => undefined);
+    }).catch(logIgnored('deferred:318', undefined));
   }
 
   return { attempted, registered };
@@ -370,14 +373,16 @@ async function transmitOne(
     );
     // The sale already exists. Stamp the codes even when the claim could
     // only be parked, so a later void still sees the NIVF.
-    await stampFiscalIdentifiersOnSale(saleKey, result).catch(() => undefined);
+    await stampFiscalIdentifiersOnSale(saleKey, result).catch(
+      logIgnored('deferred:373', undefined),
+    );
     if (!stored.ok) {
       await notifyAdminsAndActor({
         message:
           stored.message ||
           `Fiskalizimi accepted docId ${idempotencyKey} but the local record could not be saved.`,
         type: 'SECURITY',
-      }).catch(() => undefined);
+      }).catch(logIgnored('deferred:380', undefined));
       return 'not-sent';
     }
     // The guest left with the pending receipt: say the fiscal one is ready.
@@ -385,7 +390,7 @@ async function transmitOne(
     await noticeLateFiscalReceipt({
       saleKey,
       nivf: result.nivf || undefined,
-    }).catch(() => undefined);
+    }).catch(logIgnored('deferred:388', undefined));
     return 'sent';
   } catch (e: any) {
     const message = String(e?.message || e);
@@ -429,12 +434,12 @@ async function transmitOne(
           idempotencyKey,
           decision.attemptId,
           message,
-        ).catch(() => undefined);
+        ).catch(logIgnored('deferred:432', undefined));
       }
       await notifyAdminsAndActor({
         message: `Deferred fiskalizimi is now refused${whereLabel(latest) ? ` on ${whereLabel(latest)}` : ''} · docId ${idempotencyKey}: ${message}`,
         type: 'SECURITY',
-      }).catch(() => undefined);
+      }).catch(logIgnored('deferred:437', undefined));
       return 'not-sent';
     }
     // Unknown outcome: back on the queue, checked before it is sent again
@@ -454,7 +459,7 @@ async function transmitOne(
         idempotencyKey,
         decision.attemptId,
         message,
-      ).catch(() => undefined);
+      ).catch(logIgnored('deferred:457', undefined));
     }
     if (requeued && !requeued.held) {
       await noticeOutage(message);
@@ -480,7 +485,7 @@ export function startFiscalDeferLoop(): void {
       const { coreServices } = await import('../core');
       const settings = (await coreServices
         .readSettings()
-        .catch(() => null)) as SettingsDTO | null;
+        .catch(logIgnored('deferred:483', null))) as SettingsDTO | null;
       if (!settings || (settings as any)?.fiscal?.enabled !== true) return;
       // easyPos has been timing out: see whether it answers again
       // (`circuit.ts`), so live payments go back to being sent at once.

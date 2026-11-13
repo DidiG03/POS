@@ -23,6 +23,7 @@ import { applyTableOpenState } from './tableOpen';
 import { findLatestTicketLogForCurrentSession } from './tableSession';
 import { restoreDailyStockForLines } from './menuStock';
 import { storePlanBlocksTables } from './license';
+import { logIgnored } from './logIgnored';
 
 /**
  * Kitchen stock taken at Send goes back when a sent line is voided before
@@ -70,7 +71,7 @@ export async function itemVoidReplay(
   if (!key) return 'new';
   const prior = await prisma.ticketLog
     .findFirst({ where: { idempotencyKey: key } as any })
-    .catch(() => null);
+    .catch(logIgnored('ticketVoid:73', null));
   if (!prior) return 'new';
   const struck = asTicketLogItems((prior as any).itemsJson).find(
     (l: any) => l && l.voidKey === key,
@@ -86,7 +87,7 @@ async function alreadyApplied(idempotencyKey: string): Promise<boolean> {
   if (!idempotencyKey) return false;
   const row = await prisma.ticketLog
     .findFirst({ where: { idempotencyKey } as any })
-    .catch(() => null);
+    .catch(logIgnored('ticketVoid:89', null));
   return Boolean(row);
 }
 
@@ -213,7 +214,7 @@ export async function voidWholeTicket(input: {
       await restoreStockForVoided(taken);
     }
     if (input.beforeClose) {
-      await input.beforeClose().catch(() => undefined);
+      await input.beforeClose().catch(logIgnored('ticketVoid:216', undefined));
     }
     await applyTableOpenState(input.area, input.tableLabel, false).catch(
       () => false,

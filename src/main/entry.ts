@@ -8,9 +8,12 @@ import {
 } from './services/packagedSqlite';
 import { effectiveVaultFlag } from './services/devSwitches';
 import { isDiskProtectionOff } from './services/vault/protectionOff';
+import { startAppLog } from './services/appLog';
 
 app.setName('OneTap POS');
 process.title = 'OneTap POS';
+// Before anything else logs, so the start-up is in the file too.
+startAppLog('pos');
 if (process.platform === 'win32') {
   app.setAppUserModelId('com.codeorbit.pos');
 }

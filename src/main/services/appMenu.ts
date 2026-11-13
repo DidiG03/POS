@@ -5,6 +5,7 @@
 import { Menu, app, dialog, BrowserWindow, clipboard } from 'electron';
 import { onUpdaterStatusChange, updaterHandlers } from '../updater';
 import { buildAppMenuTemplate, type AppMenuPlatform } from './appMenuTemplate';
+import { openAppLogFolder } from './appLog';
 import { listLanIpv4Addresses } from './lanHost';
 
 export { buildAppMenuTemplate, updateMenuLabel } from './appMenuTemplate';
@@ -208,6 +209,9 @@ function refreshAppMenu(): void {
       : () => {
           void showTillAddressFromMenu();
         },
+    onOpenLogs: () => {
+      void openAppLogFolder();
+    },
   });
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }

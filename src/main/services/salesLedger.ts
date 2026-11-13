@@ -24,6 +24,7 @@ import { storePlanBlocksTables } from './license';
 import { isPaymentReprint } from './paymentSettle';
 import { recordPaymentBillEvents } from './billEvents';
 import { printJobWasErased, readLedgerErasedThroughId } from './ledgerErase';
+import { logIgnored } from './logIgnored';
 
 type Db = {
   order: any;
@@ -88,7 +89,7 @@ export async function writeSettledSale(
         where: { idempotencyKey: key },
         select: { id: true, printJobId: true },
       })
-      .catch(() => null);
+      .catch(logIgnored('salesLedger:91', null));
     if (byKey?.id) {
       if (printJobId && !byKey.printJobId) {
         await db.order
@@ -96,7 +97,7 @@ export async function writeSettledSale(
             where: { id: byKey.id },
             data: { printJobId } as any,
           })
-          .catch(() => {});
+          .catch(logIgnored('salesLedger:99', undefined));
       }
       return { orderId: byKey.id, created: false };
     }
@@ -107,7 +108,7 @@ export async function writeSettledSale(
         where: { printJobId },
         select: { id: true },
       })
-      .catch(() => null);
+      .catch(logIgnored('salesLedger:110', null));
     if (byJob?.id) return { orderId: byJob.id, created: false };
   }
 
@@ -127,7 +128,7 @@ export async function writeSettledSale(
         where: { id: userId },
         select: { id: true, displayName: true },
       })
-      .catch(() => null);
+      .catch(logIgnored('salesLedger:130', null));
     if (!user) userId = null;
     else if (!userName)
       userName = String(user.displayName || '').trim() || null;
@@ -140,7 +141,7 @@ export async function writeSettledSale(
         where: { area, label: tableLabel },
         select: { id: true },
       })
-      .catch(() => null);
+      .catch(logIgnored('salesLedger:143', null));
     if (table?.id) tableId = Number(table.id);
   }
 
@@ -154,7 +155,10 @@ export async function writeSettledSale(
             where: { sku: { in: skus } },
             select: { id: true, sku: true },
           })
-          .catch(() => [])) as { id: number; sku: string }[])
+          .catch(logIgnored('salesLedger:157', []))) as {
+          id: number;
+          sku: string;
+        }[])
       : [];
   const menuBySku = new Map(menuRows.map((m) => [m.sku, m.id]));
 
@@ -239,14 +243,14 @@ export async function writeSettledSale(
               where: { idempotencyKey: key },
               select: { id: true },
             })
-            .catch(() => null)
+            .catch(logIgnored('salesLedger:242', null))
         : printJobId
           ? await db.order
               .findFirst({
                 where: { printJobId },
                 select: { id: true },
               })
-              .catch(() => null)
+              .catch(logIgnored('salesLedger:249', null))
           : null;
       if (again?.id) return { orderId: again.id, created: false };
     }
@@ -269,7 +273,7 @@ export async function markReceiptPrintFailed(
       where: { id, status: 'SENT' },
       data: { status: 'FAILED' },
     })
-    .catch(() => undefined);
+    .catch(logIgnored('salesLedger:272', undefined));
 }
 
 /**
@@ -348,7 +352,7 @@ export async function persistReceiptAudit(input: {
             attempts: true,
           },
         })
-        .catch(() => null);
+        .catch(logIgnored('salesLedger:351', null));
       const sale = existing
         ? await ensureSettledSaleFromPrintJob(existing, settings)
         : await writeSettledSale(prisma as any, {

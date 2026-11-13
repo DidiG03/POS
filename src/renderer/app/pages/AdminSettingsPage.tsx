@@ -9,6 +9,7 @@ import type {
   UpdateStatusDTO,
 } from '@shared/ipc';
 import { toast } from '../../stores/toasts';
+import { downloadBlob } from '../../utils/spreadsheet';
 import { ALL_KDS_STATIONS, type KdsStation } from '@shared/kdsStations';
 import FloorCanvas from '../components/FloorCanvas';
 import {
@@ -535,7 +536,56 @@ function SystemUpdatesSettings() {
           </div>
         )}
       </SettingsCard>
+      <TillLogCard />
     </div>
+  );
+}
+
+/** Download the till's log file for support (`/admin/till-log`). */
+function TillLogCard() {
+  const { t } = useTranslation();
+  const [busy, setBusy] = useState(false);
+  const getTillLog = (window.api.admin as { getTillLog?: () => Promise<any> })
+    .getTillLog;
+  if (!getTillLog) return null;
+  const download = async () => {
+    setBusy(true);
+    try {
+      const r = await getTillLog();
+      if (!r?.ok || typeof r.text !== 'string') {
+        toast.error(String(r?.error || t('settingsSupport.logFailed')));
+        return;
+      }
+      const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-');
+      downloadBlob(
+        new Blob([r.text], { type: 'text/plain;charset=utf-8' }),
+        `onetap-till-log-${stamp}.txt`,
+      );
+      toast.success(t('settingsSupport.logSaved'));
+    } catch (e: unknown) {
+      toast.error(
+        String(
+          (e as { message?: string })?.message ||
+            t('settingsSupport.logFailed'),
+        ),
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <SettingsCard
+      title={t('settingsSupport.title')}
+      description={t('settingsSupport.help')}
+    >
+      <Button
+        variant="secondary"
+        onClick={() => void download()}
+        disabled={busy}
+      >
+        {busy ? t('common.loading') : t('settingsSupport.downloadLog')}
+      </Button>
+    </SettingsCard>
   );
 }
 

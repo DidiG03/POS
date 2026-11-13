@@ -17,6 +17,7 @@ import {
   pickPrinterProfile,
   printJobIsWatched,
 } from './printDispatcher';
+import { logIgnored } from './logIgnored';
 
 export const PRINT_JOBS_LOOKBACK_MS = 12 * 60 * 60_000;
 
@@ -78,7 +79,7 @@ export async function listStationPrintJobs(
       orderBy: { createdAt: 'desc' },
       take: 100,
     } as any)
-    .catch(() => [])) as any[];
+    .catch(logIgnored('printJobs:81', []))) as any[];
   const settings = await coreServices.readSettings().catch(() => ({}));
   const out: StationPrintJobDTO[] = [];
   for (const r of rows) {
@@ -126,7 +127,7 @@ export async function reprintStationPrintJob(
 ): Promise<{ ok: boolean; error?: string }> {
   const row = (await prisma.printJob
     .findUnique({ where: { id: Number(id) } })
-    .catch(() => null)) as any;
+    .catch(logIgnored('printJobs:129', null))) as any;
   if (!row || !printJobIsWatched(row.payloadJson)) {
     return { ok: false, error: 'That print job no longer exists.' };
   }
@@ -147,7 +148,7 @@ export async function reprintStationPrintJob(
   }
   const who = (await prisma.user
     .findUnique({ where: { id: Number(actor.userId) } })
-    .catch(() => null)) as any;
+    .catch(logIgnored('printJobs:150', null))) as any;
   const whoName = String(who?.displayName || `#${actor.userId}`);
   console.log(
     `[print] job #${row.id} reprinted by ${whoName} (user ${actor.userId})`,
@@ -179,7 +180,7 @@ export async function reprintStationPrintJob(
         nextAttemptAt: null,
       } as any,
     })
-    .catch(() => {});
+    .catch(logIgnored('printJobs:182', undefined));
   meta.reprintedById = Number(actor.userId) || null;
   const r = await dispatchTicket({ ...p, meta }, settings as any, {
     persistRetryOnTransientFailure: true,
