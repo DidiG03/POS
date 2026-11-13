@@ -14,9 +14,10 @@
  *   - `LOCK_AFTER_FAILURES` failures for one account from one device inside
  *     the window lock that account on that device for `IP_LOCK_MS`. Other
  *     staff sharing the tablet keep signing in;
- *   - every account (waiters too: their PINs can be one character) locks for
- *     LAN login after `ACCOUNT_LOCK_AFTER_FAILURES` failures from any mix of
- *     devices, so rotating addresses does not reset the budget;
+ *   - every account locks for LAN login after `ACCOUNT_LOCK_AFTER_FAILURES`
+ *     failures from any mix of devices, so rotating addresses does not reset
+ *     the budget; a device the person signed in on in the last 12 hours is
+ *     not covered by that lock, so it cannot be used to lock them out;
  *   - `IP_SPRAY_LOCK_AFTER_FAILURES` failures from one device across all
  *     accounts lock the device, so it cannot walk every name in turn.
  *
@@ -51,6 +52,36 @@ type Counter = {
   windowStart: number;
   lockedUntil: number;
 };
+
+/**
+ * Where each account last signed in correctly, and when. The account-wide
+ * lock does not apply on those devices: it is there to stop a guesser
+ * rotating addresses, and it used to lock the waiter out of their own
+ * phone too, for anyone on the Wi-Fi to trigger.
+ */
+export const TRUSTED_DEVICE_MS = 12 * 60 * 60_000;
+const trustedDevices = new Map<string, number>();
+
+/** Call after a correct PIN for `userId` from `ip`. */
+export function rememberLanLoginSuccess(
+  ip: string,
+  userId: number,
+  now = Date.now(),
+): void {
+  if (!(Number(userId) > 0)) return;
+  trustedDevices.set(deviceKey(ip, userId), now);
+  // Bounded: a till sees a few dozen devices.
+  if (trustedDevices.size > 2000) {
+    for (const [k, at] of trustedDevices) {
+      if (now - at > TRUSTED_DEVICE_MS) trustedDevices.delete(k);
+    }
+  }
+}
+
+function isTrustedDevice(ip: string, userId: number, now: number): boolean {
+  const at = trustedDevices.get(deviceKey(ip, userId));
+  return typeof at === 'number' && now - at <= TRUSTED_DEVICE_MS;
+}
 
 const byDevice = new Map<string, Counter>();
 const byAccount = new Map<number, Counter>();
@@ -151,7 +182,12 @@ export function beginLanLoginAttempt(
   const uid = Number(userId) || 0;
   const device = current(byDevice, deviceKey(ip, uid), now);
   const spray = current(byIp, String(ip || ''), now);
-  const account = uid > 0 ? current(byAccount, uid, now) : null;
+  // On a device this person signed in on lately, only that device's own
+  // budget applies (`rememberLanLoginSuccess`).
+  const account =
+    uid > 0 && !isTrustedDevice(ip, uid, now)
+      ? current(byAccount, uid, now)
+      : null;
 
   const lockedForMs = Math.max(
     remaining(device, now),
@@ -236,6 +272,7 @@ export function beginLanLoginAttempt(
 
 /** Test seam. */
 export function __resetLanLoginThrottleForTests(): void {
+  trustedDevices.clear();
   byDevice.clear();
   byAccount.clear();
   byIp.clear();

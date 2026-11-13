@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  isShortStaffPin,
   isCommonAdminPin,
   normalizePin,
   promotionNeedsNewPin,
@@ -8,11 +9,19 @@ import {
 } from './staffPin';
 
 describe('staffPinError', () => {
-  it('lets staff use a single digit or letter', () => {
-    expect(staffPinError('7', 'WAITER')).toBeNull();
-    expect(staffPinError('a', 'WAITER')).toBeNull();
-    expect(staffPinError('B', 'BARTENDER')).toBeNull();
+  it('needs 4-6 characters for a staff PIN being set', () => {
+    expect(staffPinError('7', 'WAITER')).toBe('staffFormat');
+    expect(staffPinError('abc', 'WAITER')).toBe('staffFormat');
     expect(staffPinError('ab12', 'CASHIER')).toBeNull();
+    expect(staffPinError('B7c9x2', 'BARTENDER')).toBeNull();
+  });
+
+  it('still signs in with a short PIN set before the rule', () => {
+    expect(staffPinError('7')).toBeNull();
+    expect(staffPinError('a')).toBeNull();
+    expect(isShortStaffPin('7', 'WAITER')).toBe(true);
+    expect(isShortStaffPin('ab12', 'WAITER')).toBe(false);
+    expect(isShortStaffPin('1234', 'ADMIN')).toBe(false);
   });
 
   it('rejects empty, too long or symbol PINs for staff', () => {

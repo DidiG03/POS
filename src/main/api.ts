@@ -154,6 +154,7 @@ import {
 import { findStaleBillPayment } from './services/staleBill';
 import { checkPaymentApproval } from './services/paymentApproval';
 import { checkPaymentLines } from './services/paymentLines';
+import { noticeShortPin } from './services/shortPinNotice';
 import { INVALID_SPLIT, normalizePaymentSplit } from '@shared/paymentSplits';
 import {
   CASH_COUNT_REQUIRED,
@@ -234,6 +235,7 @@ import {
   ACCOUNT_LOCK_MS,
   IP_LOCK_MS,
   beginLanLoginAttempt,
+  rememberLanLoginSuccess,
   lanLoginDeviceLockedFor,
   lanLoginIpLockedFor,
   type LanLoginFailure,
@@ -1767,6 +1769,13 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           // Not `succeed`: a right PIN must not wipe this device's earlier
           // misses (pairing, unknown accounts) from the shared budget.
           if (attempt?.ok) attempt.release();
+          rememberLanLoginSuccess(remoteIp, Number(user.id));
+          void noticeShortPin({
+            userId: Number(user.id),
+            displayName: String(user.displayName || ''),
+            role: user.role,
+            pin,
+          });
         } finally {
           if (attempt?.ok) attempt.release();
         }

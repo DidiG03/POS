@@ -13,7 +13,16 @@
 
 export const STAFF_PIN_MAX_LENGTH = 6;
 
-const STAFF_PIN_RE = /^[0-9a-z]{1,6}$/;
+/**
+ * A PIN being set or changed: 4–6 letters or digits. One character was
+ * allowed, and throttling was then the only thing between a guesser and
+ * a waiter's account. PINs set before keep working at sign-in
+ * (`STAFF_PIN_LOGIN_RE`); admins are told whose to replace.
+ */
+const STAFF_PIN_RE = /^[0-9a-z]{4,6}$/;
+/** Sign-in: what may have been set before the 4-character rule. */
+const STAFF_PIN_LOGIN_RE = /^[0-9a-z]{1,6}$/;
+export const STAFF_PIN_MIN_LENGTH = 4;
 const ADMIN_PIN_RE = /^\d{4,6}$/;
 
 export type StaffPinError = 'required' | 'adminDigits' | 'staffFormat';
@@ -65,7 +74,19 @@ export function staffPinError(
   const p = normalizePin(pin);
   if (!p) return 'required';
   if (isAdminPinRole(role)) return ADMIN_PIN_RE.test(p) ? null : 'adminDigits';
+  // No role: a sign-in, where a PIN set before the 4-character rule
+  // still has to work.
+  if (role === undefined || role === null || role === '') {
+    return STAFF_PIN_LOGIN_RE.test(p) ? null : 'staffFormat';
+  }
   return STAFF_PIN_RE.test(p) ? null : 'staffFormat';
+}
+
+/** A PIN that signs in but would not be accepted if set today. */
+export function isShortStaffPin(pin: unknown, role: unknown): boolean {
+  if (isAdminPinRole(role)) return false;
+  const p = normalizePin(pin);
+  return p.length > 0 && p.length < STAFF_PIN_MIN_LENGTH;
 }
 
 /** Admin PINs the host refuses as too easy to guess. */

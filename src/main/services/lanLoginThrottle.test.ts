@@ -10,6 +10,7 @@ import {
   LOCK_AFTER_FAILURES,
   __resetLanLoginThrottleForTests,
   beginLanLoginAttempt,
+  rememberLanLoginSuccess,
   lanLoginAccountLockedFor,
   lanLoginDeviceLockedFor,
   lanLoginIpLockedFor,
@@ -119,5 +120,37 @@ describe('LAN login throttle', () => {
       failOnce('10.0.0.5', 0);
     }
     expect(lanLoginIpLockedFor('10.0.0.5', T0)).toBe(IP_LOCK_MS);
+  });
+});
+
+describe('a device the person signed in on lately', () => {
+  beforeEach(() => __resetLanLoginThrottleForTests());
+
+  it('is not locked out when strangers lock the account', () => {
+    const now = 1_800_000_000_000;
+    rememberLanLoginSuccess('10.0.0.5', 7, now);
+    // Strangers on two addresses use up the account's budget.
+    for (let i = 0; i < ACCOUNT_LOCK_AFTER_FAILURES; i++) {
+      const ip = i % 2 ? '10.0.0.66' : '10.0.0.77';
+      const a = beginLanLoginAttempt(ip, 7, now + i);
+      if (a.ok) a.fail(now + i);
+    }
+    expect(lanLoginAccountLockedFor(7, now + 100)).toBeGreaterThan(0);
+    // A new device is locked out of that account…
+    expect(beginLanLoginAttempt('10.0.0.88', 7, now + 100).ok).toBe(false);
+    // …the waiter's own phone is not.
+    const own = beginLanLoginAttempt('10.0.0.5', 7, now + 100);
+    expect(own.ok).toBe(true);
+    if (own.ok) own.release();
+  });
+
+  it('still has its own limit for guesses', () => {
+    const now = 1_800_000_000_000;
+    rememberLanLoginSuccess('10.0.0.5', 7, now);
+    for (let i = 0; i < LOCK_AFTER_FAILURES; i++) {
+      const a = beginLanLoginAttempt('10.0.0.5', 7, now + i);
+      if (a.ok) a.fail(now + i);
+    }
+    expect(beginLanLoginAttempt('10.0.0.5', 7, now + 100).ok).toBe(false);
   });
 });

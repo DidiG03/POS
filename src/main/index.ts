@@ -36,6 +36,7 @@ import { coreServices, peekCachedSettings } from './services/core';
 import { verifyManagerPin } from './services/managerPin';
 import { checkPaymentApproval } from './services/paymentApproval';
 import { checkPaymentLines } from './services/paymentLines';
+import { noticeShortPin } from './services/shortPinNotice';
 import { crashReportsAllowed } from '@shared/crashReportScrub';
 import { INVALID_SPLIT, normalizePaymentSplit } from '@shared/paymentSplits';
 import {
@@ -1881,6 +1882,12 @@ ipcHandle('auth:loginWithPin', async (_e, payload) => {
       };
       setSentryUser(user.id, user.role);
       addBreadcrumb('User logged in', 'auth', 'info');
+      void noticeShortPin({
+        userId: user.id,
+        displayName: String(user.displayName || ''),
+        role: user.role,
+        pin,
+      });
       return userData;
     }
     // record a security notification for the targeted user

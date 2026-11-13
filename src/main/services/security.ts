@@ -205,7 +205,8 @@ export function sanitizeString(
 
 /**
  * Validate PIN format and complexity.
- * Staff: 1–6 letters or digits. Admin: 4–6 digits (see `@shared/staffPin`).
+ * Staff: 4–6 letters or digits when set (1–6 still sign in). Admin: 4–6
+ * digits (see `@shared/staffPin`).
  * Omit `role` at login — the stored hash is the real check there.
  */
 export function validatePin(
@@ -221,7 +222,12 @@ export function validatePin(
     return { valid: false, error: 'Admin PIN must be 4-6 digits' };
   }
   if (formatError === 'staffFormat') {
-    return { valid: false, error: 'PIN must be 1-6 letters or digits' };
+    return {
+      valid: false,
+      error: role
+        ? 'PIN must be 4-6 letters or digits'
+        : 'PIN must be 1-6 letters or digits',
+    };
   }
   const pinStr = normalizePin(pin);
 
