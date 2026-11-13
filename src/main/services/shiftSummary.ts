@@ -4,6 +4,9 @@ import { isVatEnabledFromSettings } from '@shared/vatFromFiscal';
 import { prisma } from '@db/client';
 import { roundMoney } from '@shared/money';
 import { coreServices } from './core';
+import { cashCountResult } from '@shared/cashCount';
+import { notifyAdminsAndActor } from './adminAlerts';
+import { logIgnored } from './logIgnored';
 import type { ShiftClosePrintSummary } from '../print';
 import { dispatchTicket, pickActiveReceiptProfile } from './printDispatcher';
 
@@ -157,12 +160,30 @@ export async function finalizeShiftAfterClockOut(args: {
   userId: number;
   openedAt: Date;
   closedAt: Date;
+  /** Cash counted at clock-out, when the venue asks for a count. */
+  cashCounted?: number | null;
 }): Promise<ShiftClosePrintSummary> {
   const summary = await computeShiftPaidTotals({
     userId: args.userId,
     openedAt: args.openedAt,
     closedAt: args.closedAt,
   });
+  if (typeof args.cashCounted === 'number') {
+    const expected =
+      summary.byMethod.find((m) => m.method.toUpperCase() === 'CASH')?.amount ??
+      0;
+    summary.cashCount = cashCountResult(expected, args.cashCounted);
+    if (summary.cashCount.difference !== 0) {
+      const cc = summary.cashCount;
+      await notifyAdminsAndActor({
+        type: 'SECURITY',
+        message:
+          `Cash count at clock-out for ${summary.waiterName}: counted ${cc.counted.toFixed(2)}, ` +
+          `expected ${cc.expected.toFixed(2)} — ${cc.difference < 0 ? 'short' : 'over'} ` +
+          `${Math.abs(cc.difference).toFixed(2)}.`,
+      }).catch(logIgnored('shiftSummary:cashCountNotice', undefined));
+    }
+  }
   await prisma.dayShift
     .update({
       where: { id: args.shiftId },

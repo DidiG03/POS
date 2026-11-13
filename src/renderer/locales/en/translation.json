@@ -643,7 +643,9 @@
     "idleLockTitle": "Lock screens when not in use",
     "idleLockHelp": "After this long without a touch, the till, waiters' phones and the Admin app go back to the PIN pad, so the next person cannot act as the last one. An order being typed and orders waiting to reach the till are kept for that person's next sign-in. Kitchen screens never lock.",
     "idleLockOff": "Off",
-    "minutesN": "{{n}} min"
+    "minutesN": "{{n}} min",
+    "cashCountTitle": "Count cash at clock-out",
+    "cashCountHelp": "Staff enter the cash they hold when they clock out, without seeing the expected amount. The shift slip shows counted, expected and over/short, and admins are told when they differ."
   },
   "settingsNav": {
     "groupVenue": "Venue",
@@ -2075,5 +2077,11 @@
   "app": {
     "updateRequiredTitle": "Update the app",
     "updateRequired": "This app is too old for this till. Update OneTap and sign in again."
+  },
+  "cashCount": {
+    "title": "Count your cash",
+    "help": "Count the cash you are holding from this shift and enter the total. The shift slip shows it next to the cash you took.",
+    "submit": "Clock out",
+    "invalid": "Enter an amount, for example 120 or 95.50."
   }
 }

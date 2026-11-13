@@ -36,6 +36,11 @@ import { verifyManagerPin } from './services/managerPin';
 import { checkPaymentApproval } from './services/paymentApproval';
 import { checkPaymentLines } from './services/paymentLines';
 import {
+  CASH_COUNT_REQUIRED,
+  cashCountAtClockOut,
+  parseCountedCash,
+} from '@shared/cashCount';
+import {
   startTillHealthChecks,
   stopTillHealthChecks,
 } from './services/tillHealthRead';
@@ -2276,13 +2281,22 @@ async function clockInLocal(userId: number) {
   };
 }
 
-ipcHandle('shifts:clockOut', async (_e, { userId, force }, ctx) => {
-  userId = resolveActorUserId(ctx, userId);
-  const forced = clockOutForceAllowed(force, ctx?.session?.role);
-  return withShiftLock(userId, () => clockOutLocal(userId, forced));
-});
+ipcHandle(
+  'shifts:clockOut',
+  async (_e, { userId, force, cashCounted }, ctx) => {
+    userId = resolveActorUserId(ctx, userId);
+    const forced = clockOutForceAllowed(force, ctx?.session?.role);
+    return withShiftLock(userId, () =>
+      clockOutLocal(userId, forced, cashCounted),
+    );
+  },
+);
 
-async function clockOutLocal(userId: number, force: boolean) {
+async function clockOutLocal(
+  userId: number,
+  force: boolean,
+  cashCountedRaw?: unknown,
+) {
   const open = await prisma.dayShift.findFirst({
     where: { closedAt: null, openedById: userId },
   });
@@ -2338,6 +2352,19 @@ async function clockOutLocal(userId: number, force: boolean) {
     }
   }
 
+  // A blind count of the cash held, when the venue asks for one
+  // (`@shared/cashCount`). An admin closing someone else's shift skips it.
+  const counting =
+    !force && cashCountAtClockOut(await coreServices.readSettings());
+  const cashCounted = counting ? parseCountedCash(cashCountedRaw) : null;
+  if (counting && cashCounted === null) {
+    return {
+      ok: false,
+      code: CASH_COUNT_REQUIRED,
+      error: 'Count the cash you are holding and enter the amount.',
+    };
+  }
+
   const closedAt = new Date();
   const updated = await prisma.dayShift.update({
     where: { id: open.id },
@@ -2348,6 +2375,7 @@ async function clockOutLocal(userId: number, force: boolean) {
     userId,
     openedAt: open.openedAt,
     closedAt,
+    cashCounted,
   }).catch((e) => console.warn('[shifts:clockOut] shift print failed:', e));
   return {
     id: updated.id,

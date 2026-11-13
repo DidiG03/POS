@@ -1505,10 +1505,10 @@ export function installBrowserLanApi(): void {
           body: JSON.stringify({ userId }),
         });
       },
-      async clockOut(userId: number) {
+      async clockOut(userId: number, opts?: { cashCounted?: string | number }) {
         return await goLan('/shifts/clock-out', {
           method: 'POST',
-          body: JSON.stringify({ userId }),
+          body: JSON.stringify({ userId, cashCounted: opts?.cashCounted }),
         });
       },
       // Use LAN proxy so login screen can show "clocked in" even before the tablet is logged in.

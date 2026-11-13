@@ -10,6 +10,7 @@ import {
   type ReactNode,
 } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useCashCountClockOut } from './components/CashCountDialog';
 import { useSessionStore } from '../stores/session';
 import { useLicenseCapabilities } from '../stores/licenseCapabilities';
 import { useTableStatus } from '@renderer/stores/tableStatus';
@@ -118,6 +119,8 @@ export default function AppLayout() {
   const [hasOpen, setHasOpen] = useState<boolean>(false);
   const [captureClock, setCaptureClock] = useState(false);
   const [confirmModal, setConfirmModal] = useState<boolean>(false);
+  // Asks for the cash counted when the venue wants a count.
+  const cashCount = useCashCountClockOut();
   const isBrowserClient =
     typeof window !== 'undefined' &&
     Boolean((window as any).__BROWSER_CLIENT__);
@@ -1016,6 +1019,7 @@ export default function AppLayout() {
         </nav>
       ) : null}
 
+      {cashCount.dialog}
       {user && captureClock && (
         <ConfirmDialog
           open={confirmModal}
@@ -1026,7 +1030,8 @@ export default function AppLayout() {
           onCancel={() => setConfirmModal(false)}
           onConfirm={async () => {
             try {
-              const r: any = await window.api.shifts.clockOut(user.id);
+              const r: any = await cashCount.clockOut(user.id);
+              if (r && r.cancelled) return;
               // The server refuses to close a shift while the waiter still owns
               // open tables. Surface the reason and keep them signed in so they
               // can finish or transfer the table.

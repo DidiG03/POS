@@ -64,8 +64,11 @@ const api: Api = {
       ipcRenderer.invoke('shifts:getOpen', { userId }),
     clockIn: (userId: number) =>
       ipcRenderer.invoke('shifts:clockIn', { userId }),
-    clockOut: (userId: number) =>
-      ipcRenderer.invoke('shifts:clockOut', { userId }),
+    clockOut: (userId: number, opts?: { cashCounted?: string | number }) =>
+      ipcRenderer.invoke('shifts:clockOut', {
+        userId,
+        cashCounted: opts?.cashCounted,
+      }),
     listOpen: () => ipcRenderer.invoke('shifts:listOpen'),
   },
   admin: {

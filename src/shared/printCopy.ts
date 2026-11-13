@@ -58,6 +58,10 @@ type PrintCopy = {
   netSales: string;
   byPayment: string;
   endOfShift: string;
+  cashCounted: string;
+  cashExpected: string;
+  cashOver: string;
+  cashShort: string;
   /** Kitchen slip banners: a void, a reprint, a slip printed late. */
   voidBanner: string;
   cancelledBanner: string;
@@ -109,6 +113,10 @@ const EN: PrintCopy = {
   netSales: 'Net sales',
   byPayment: 'By payment:',
   endOfShift: 'End of shift',
+  cashCounted: 'Cash counted',
+  cashExpected: 'Cash expected',
+  cashOver: 'Over',
+  cashShort: 'SHORT',
   voidBanner: '*** VOID - DO NOT MAKE ***',
   cancelledBanner: '*** ORDER CANCELLED ***',
   reprintBanner: (at) => `REPRINT - sent ${at}`,
@@ -158,6 +166,10 @@ const SQ: PrintCopy = {
   netSales: 'Shitje neto',
   byPayment: 'Sipas pagesës:',
   endOfShift: 'Fundi i turnit',
+  cashCounted: 'Para të numëruara',
+  cashExpected: 'Para të pritura',
+  cashOver: 'Tepricë',
+  cashShort: 'MUNGESË',
   voidBanner: '*** ANULUAR - MOS E PERGATIT ***',
   cancelledBanner: '*** POROSIA U ANULUA ***',
   reprintBanner: (at) => `RIPRINTIM - derguar ${at}`,

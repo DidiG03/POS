@@ -154,6 +154,11 @@ import {
 import { findStaleBillPayment } from './services/staleBill';
 import { checkPaymentApproval } from './services/paymentApproval';
 import { checkPaymentLines } from './services/paymentLines';
+import {
+  CASH_COUNT_REQUIRED,
+  cashCountAtClockOut,
+  parseCountedCash,
+} from '@shared/cashCount';
 import { stampPaymentForSession } from './services/paymentStamp';
 import { checkBillSlip, UNKNOWN_SLIP_KIND } from './services/billSlip';
 import { appLogTail } from './services/appLog';
@@ -4398,6 +4403,25 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             }
           }
 
+          // A blind count of the cash held, when the venue asks for one
+          // (`@shared/cashCount`). An admin closing a shift skips it.
+          const counting =
+            !force && cashCountAtClockOut(await coreServices.readSettings());
+          const cashCounted = counting
+            ? parseCountedCash(body?.cashCounted)
+            : null;
+          if (counting && cashCounted === null) {
+            return send(
+              res,
+              200,
+              {
+                ok: false,
+                code: CASH_COUNT_REQUIRED,
+                error: 'Count the cash you are holding and enter the amount.',
+              },
+              corsOrigin,
+            );
+          }
           const closedAt = new Date();
           const updated = await prisma.dayShift.update({
             where: { id: open.id },
@@ -4408,6 +4432,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             userId: Number(userId),
             openedAt: open.openedAt,
             closedAt,
+            cashCounted,
           }).catch((e) =>
             console.warn('[api shifts/clock-out] shift print failed:', e),
           );

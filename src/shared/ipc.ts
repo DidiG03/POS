@@ -90,6 +90,11 @@ export interface SettingsDTO {
       hours?: 12 | 24;
     };
     /**
+     * Staff enter the cash they hold when they clock out (a blind count);
+     * the shift slip and an admin notice compare it with their cash sales.
+     */
+    cashCountAtClockOut?: boolean;
+    /**
      * A table open longer than `hours`: remind the admins and the waiter
      * once per sitting (default), or void its unpaid lines automatically.
      */
@@ -691,8 +696,12 @@ export interface ShiftDTO {
 export interface ClockOutBlockedDTO {
   ok: false;
   error: string;
-  code: 'OPEN_TABLES_OWNED';
-  openTables: { area: string; label: string }[];
+  /**
+   * `CASH_COUNT_REQUIRED`: the venue counts cash at clock-out; ask for the
+   * amount and call `clockOut` again with `cashCounted`.
+   */
+  code: 'OPEN_TABLES_OWNED' | 'CASH_COUNT_REQUIRED';
+  openTables?: { area: string; label: string }[];
 }
 
 /** Waiter closed a shift and reopen is blocked until `reopenAt`. */
@@ -706,7 +715,10 @@ export interface ClockInBlockedDTO {
 export interface ApiShifts {
   getOpen(userId: number): Promise<ShiftDTO | null>;
   clockIn(userId: number): Promise<ShiftDTO | ClockInBlockedDTO | null>;
-  clockOut(userId: number): Promise<ShiftDTO | ClockOutBlockedDTO | null>;
+  clockOut(
+    userId: number,
+    opts?: { cashCounted?: string | number },
+  ): Promise<ShiftDTO | ClockOutBlockedDTO | null>;
   listOpen(): Promise<number[]>; // userIds with open shifts
 }
 

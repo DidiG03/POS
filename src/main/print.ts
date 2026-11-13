@@ -391,6 +391,8 @@ export type ShiftClosePrintSummary = {
   revenueGross: number;
   vatEnabled: boolean;
   byMethod: { method: string; amount: number }[];
+  /** The cash the person counted at clock-out (`@shared/cashCount`). */
+  cashCount?: { expected: number; counted: number; difference: number };
 };
 
 export function buildEscposShiftSummary(
@@ -458,6 +460,27 @@ export function buildEscposShiftSummary(
           layout,
         ),
       );
+    }
+  }
+  if (summary.cashCount) {
+    const cc = summary.cashCount;
+    lines.push(escposText(`${layout.sep}\n`));
+    lines.push(
+      ...twoCol(copy.cashCounted, formatMoneyEscpos(cc.counted), layout),
+    );
+    lines.push(
+      ...twoCol(copy.cashExpected, formatMoneyEscpos(cc.expected), layout),
+    );
+    if (cc.difference !== 0) {
+      lines.push(cmdBold(true));
+      lines.push(
+        ...twoCol(
+          cc.difference < 0 ? copy.cashShort : copy.cashOver,
+          formatMoneyEscpos(Math.abs(cc.difference)),
+          layout,
+        ),
+      );
+      lines.push(cmdBold(false));
     }
   }
   lines.push(escposText('\n'));

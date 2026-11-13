@@ -781,6 +781,7 @@ function PreferencesSettings() {
     'remind' | 'void'
   >('remind');
   const [captureClockInOut, setCaptureClockInOut] = useState(true);
+  const [cashCountOut, setCashCountOut] = useState(false);
   const [blockShiftReopenEnabled, setBlockShiftReopenEnabled] = useState(false);
   const [blockShiftReopenHours, setBlockShiftReopenHours] = useState<
     2 | 4 | 8 | 12 | 24
@@ -805,6 +806,7 @@ function PreferencesSettings() {
     idleLockMins: 0 | 2 | 5 | 10 | 15 | 30;
     requireMgrServiceRemoval: boolean;
     captureClockInOut: boolean;
+    cashCountOut: boolean;
     blockShiftReopenEnabled: boolean;
     blockShiftReopenHours: 2 | 4 | 8 | 12 | 24;
     autoCloseShiftEnabled: boolean;
@@ -828,6 +830,7 @@ function PreferencesSettings() {
     idleLockMins: 10,
     requireMgrServiceRemoval: true,
     captureClockInOut: true,
+    cashCountOut: false,
     blockShiftReopenEnabled: false,
     blockShiftReopenHours: 12,
     autoCloseShiftEnabled: false,
@@ -857,6 +860,7 @@ function PreferencesSettings() {
     idleLockMins,
     requireMgrServiceRemoval,
     captureClockInOut,
+    cashCountOut,
     blockShiftReopenEnabled,
     blockShiftReopenHours,
     autoCloseShiftEnabled,
@@ -923,6 +927,9 @@ function PreferencesSettings() {
           theme: next.theme,
           serviceCharge: { enabled: next.enabled, mode: next.mode, value: n },
           captureClockInOut: next.captureClockInOut,
+          cashCountAtClockOut: next.captureClockInOut
+            ? next.cashCountOut
+            : false,
           blockShiftReopen: {
             enabled: next.captureClockInOut
               ? next.blockShiftReopenEnabled
@@ -1063,6 +1070,7 @@ function PreferencesSettings() {
         setCaptureClockInOut(
           (s as any)?.preferences?.captureClockInOut !== false,
         );
+        setCashCountOut((s as any)?.preferences?.cashCountAtClockOut === true);
         const bsr = (s as any)?.preferences?.blockShiftReopen || {};
         setBlockShiftReopenEnabled(Boolean(bsr.enabled));
         const bh = Number(bsr.hours);
@@ -1277,6 +1285,17 @@ function PreferencesSettings() {
                   });
                 }}
                 label={t('preferences.captureClockEnable')}
+              />
+              <SettingsToggleRow
+                title={t('preferences.cashCountTitle')}
+                description={t('preferences.cashCountHelp')}
+                checked={captureClockInOut && cashCountOut}
+                disabled={!captureClockInOut}
+                onChange={(next) => {
+                  setCashCountOut(next);
+                  persistImmediate({ cashCountOut: next });
+                }}
+                label={t('preferences.cashCountTitle')}
               />
               <SettingsToggleRow
                 title={t('preferences.blockShiftReopenEnable')}

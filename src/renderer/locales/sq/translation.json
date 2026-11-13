@@ -643,7 +643,9 @@
     "idleLockTitle": "Kyç ekranet kur nuk përdoren",
     "idleLockHelp": "Pas kaq kohe pa u prekur, arka, telefonat e kamarierëve dhe aplikacioni Admin kthehen te tastiera e PIN-it, që personi tjetër të mos veprojë si i fundit. Porosia që po shkruhet dhe porositë që presin të arrijnë në arkë ruhen për hyrjen e radhës të atij personi. Ekranet e kuzhinës nuk kyçen kurrë.",
     "idleLockOff": "Fikur",
-    "minutesN": "{{n}} min"
+    "minutesN": "{{n}} min",
+    "cashCountTitle": "Numëro paratë në dalje nga turni",
+    "cashCountHelp": "Stafi shkruan paratë që ka kur del nga turni, pa parë shumën e pritur. Fleta e turnit tregon të numëruarat, të priturat dhe tepricën/mungesën, dhe adminët njoftohen kur ndryshojnë."
   },
   "settingsNav": {
     "groupVenue": "Salla",
@@ -2075,5 +2077,11 @@
   "app": {
     "updateRequiredTitle": "Përditësoni aplikacionin",
     "updateRequired": "Ky version i aplikacionit është shumë i vjetër për këtë arkë. Përditësoni OneTap dhe hyni sërish."
+  },
+  "cashCount": {
+    "title": "Numëroni paratë",
+    "help": "Numëroni paratë që keni nga ky turn dhe shkruani totalin. Fleta e turnit e tregon pranë parave që keni marrë.",
+    "submit": "Dil nga turni",
+    "invalid": "Shkruani një shumë, p.sh. 120 ose 95.50."
   }
 }

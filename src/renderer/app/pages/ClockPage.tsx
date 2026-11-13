@@ -1,12 +1,15 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import { useCashCountClockOut } from '../components/CashCountDialog';
 import { reportAppError } from '../../utils/reportAppError';
 import { isClockCaptureEnabled } from '@shared/clockCapture';
 import { clockCaptureFromChange } from '@shared/settingsChange';
 import { useSessionStore } from '../../stores/session';
 
 export default function ClockPage() {
+  // Asks for the cash counted when the venue wants a count.
+  const cashCount = useCashCountClockOut();
   const user = useSessionStore((s) => s.user);
   const setUser = useSessionStore((s) => s.setUser);
   const navigate = useNavigate();
@@ -46,6 +49,7 @@ export default function ClockPage() {
 
   return (
     <div className="h-full min-h-0 flex items-center justify-center">
+      {cashCount.dialog}
       <div className="w-full max-w-xl pos-surface-panel p-5 sm:p-6">
         <div className="flex items-start justify-between gap-3 mb-4">
           <div>
@@ -154,7 +158,8 @@ export default function ClockPage() {
               setErr(null);
               setBusy('out');
               try {
-                const r: any = await window.api.shifts.clockOut(user.id);
+                const r: any = await cashCount.clockOut(user.id);
+                if (r && r.cancelled) return;
                 // Server may now respond with a structured rejection
                 // when the waiter still owns open tables — surface a
                 // clear message and abort the logout so they don't
