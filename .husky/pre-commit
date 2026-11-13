@@ -1,4 +1,5 @@
-pnpm exec lint-staged || true
+# Lint and format the staged files; a lint error stops the commit.
+pnpm exec lint-staged
 
 # Hard-fail commits that introduce schema drift between the local
 # (SQLite) and server (Postgres) Prisma schemas on shared business models.

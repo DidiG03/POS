@@ -57,6 +57,18 @@ jobs:
       
       - name: Run linter
         run: pnpm lint
+
+      # Packages that ship to customers: a critical advisory fails the
+      # build; high ones are listed so they are seen, without blocking.
+      - name: Check shipped dependencies for critical advisories
+        run: pnpm audit --prod --audit-level=critical
+
+      - name: List high advisories in shipped dependencies
+        run: pnpm audit --prod --audit-level=high || true
+
+      - name: Check the billing server's dependencies
+        working-directory: server
+        run: npm audit --omit=dev --audit-level=critical
       
       - name: Run unit tests
         run: pnpm test
