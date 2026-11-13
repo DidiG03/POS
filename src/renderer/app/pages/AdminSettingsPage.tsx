@@ -4782,6 +4782,12 @@ function ZReports() {
         if (!window.confirm(t('zReport.confirmEmpty'))) return;
         r = await api.issueZReport!({ confirmEmpty: true });
       }
+      // Not issued (the figures could not all be read): nothing was
+      // numbered, so the same Z can be tried again.
+      if (r?.ok === false) {
+        setStatus({ ok: false, text: String(r?.error || t('zReport.failed')) });
+        return;
+      }
       setStatus({
         ok: true,
         text: t(r?.printed ? 'zReport.issued' : 'zReport.issuedNotPrinted', {

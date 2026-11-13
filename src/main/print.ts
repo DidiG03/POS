@@ -638,6 +638,11 @@ export function zReportRows(
     },
     {
       kind: 'pair',
+      label: L('Cash refunds', 'Kthime në para'),
+      value: mc(-(cash.refunds ?? 0), tillCur),
+    },
+    {
+      kind: 'pair',
       label: L('Cash in', 'Futje parash'),
       value: mc(cash.deposits, tillCur),
     },

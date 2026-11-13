@@ -8,6 +8,8 @@ const h = vi.hoisted(() => ({
   items: [] as any[],
   corrections: [] as any[],
   billsPrinted: 0,
+  failPayments: false,
+  failTransaction: false,
   declarations: [] as any[],
   fetchArgs: [] as Array<{ from: Date; to: Date }>,
   settings: {} as any,
@@ -21,12 +23,28 @@ vi.mock('@db/client', () => ({
     syncState: {
       findUnique: async ({ where }: any) =>
         h.store.has(where.key) ? { valueJson: h.store.get(where.key) } : null,
-      upsert: async ({ where, update }: any) => {
-        h.store.set(where.key, structuredClone(update.valueJson));
-        return {};
+      // Like Prisma: nothing is written until it is awaited or run in a
+      // transaction.
+      upsert: ({ where, update }: any) => {
+        const run = async () => {
+          h.store.set(where.key, structuredClone(update.valueJson));
+          return {};
+        };
+        return { run, then: (ok: any, ko: any) => run().then(ok, ko) };
       },
     },
-    payment: { findMany: async () => h.payments },
+    $transaction: async (ops: Array<{ run: () => Promise<unknown> }>) => {
+      if (h.failTransaction) throw new Error('disk I/O error');
+      const out = [];
+      for (const op of ops) out.push(await op.run());
+      return out;
+    },
+    payment: {
+      findMany: async () => {
+        if (h.failPayments) throw new Error('SQLITE_BUSY');
+        return h.payments;
+      },
+    },
     orderItem: { findMany: async () => h.items },
     saleCorrection: { findMany: async () => h.corrections },
     billEvent: { count: async () => h.billsPrinted ?? 0 },
@@ -107,6 +125,8 @@ beforeEach(() => {
     { orderId: 3, qty: 1, unitPrice: 300, vatRate: 0.06 },
   ];
   h.corrections = [{ kind: 'CANCEL', amountDelta: -500 }];
+  h.failPayments = false;
+  h.failTransaction = false;
   const at = new Date().toISOString();
   h.declarations = [
     { at, kind: 'deposit', amount: 2000, ok: true, docId: 'cash-a' },
@@ -156,6 +176,8 @@ describe('Z report', () => {
       currency: 'ALL',
       opening: 10_000,
       sales: 900,
+      // The cancelled sale in the fixture has no payment method on record.
+      refunds: 0,
       deposits: 2000,
       withdrawals: 500,
       expected: 12_400,
@@ -534,5 +556,53 @@ describe('fiscal day boundaries', () => {
     expect(
       startOfFiscalDay(Date.parse('2026-07-01T10:00:00Z')).toISOString(),
     ).toBe('2026-06-30T22:00:00.000Z');
+  });
+});
+
+describe('Z report failures and refunds', () => {
+  it('issues nothing when part of the report cannot be read', async () => {
+    h.failPayments = true;
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    await expect(
+      issueZReport({ actorUserId: 1, print: noPrint }),
+    ).rejects.toMatchObject({ code: 'Z_COMPUTE_FAILED' });
+    err.mockRestore();
+    // No number was used: the next Z, once it can be read, is number 1.
+    h.failPayments = false;
+    const r = await issueZReport({ actorUserId: 1, print: noPrint });
+    expect('report' in r && r.report.number).toBe(1);
+  });
+
+  it('keeps no report and no number when saving it fails', async () => {
+    h.failTransaction = true;
+    await expect(
+      issueZReport({ actorUserId: 1, print: noPrint }),
+    ).rejects.toThrow(/disk I\/O/);
+    expect(h.store.size).toBe(0);
+    h.failTransaction = false;
+    const r = await issueZReport({ actorUserId: 1, print: noPrint });
+    expect('report' in r && r.report.number).toBe(1);
+  });
+
+  it('takes cash refunds off the cash expected in the drawer', async () => {
+    h.corrections = [
+      // Refund of a cash sale, possibly from an earlier day.
+      {
+        kind: 'CORRECTIVE',
+        amountDelta: -150,
+        order: { payments: [{ method: 'CASH' }] },
+      },
+      // A card refund does not leave the drawer.
+      {
+        kind: 'CANCEL',
+        amountDelta: -1200,
+        order: { payments: [{ method: 'CARD' }] },
+      },
+    ];
+    const r = await issueZReport({ actorUserId: 1, print: noPrint });
+    if (!('report' in r)) throw new Error('expected a report');
+    expect(r.report.cash.refunds).toBe(150);
+    // 10000 float + 900 cash sales - 150 refunded + 2000 in - 500 out.
+    expect(r.report.cash.expected).toBe(12_250);
   });
 });

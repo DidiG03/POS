@@ -4746,10 +4746,25 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
       if (req.method === 'POST' && pathname === '/admin/z-report') {
         const { issueZReport } = await import('./services/zReport');
         const zBody = (await parseJson(req).catch(() => null)) || {};
-        const r = await issueZReport({
-          actorUserId: auth?.userId ?? null,
-          confirmEmpty: (zBody as any)?.confirmEmpty === true,
-        });
+        let r: Awaited<ReturnType<typeof issueZReport>>;
+        try {
+          r = await issueZReport({
+            actorUserId: auth?.userId ?? null,
+            confirmEmpty: (zBody as any)?.confirmEmpty === true,
+          });
+        } catch (e: any) {
+          // Nothing was numbered or kept (`zReport.ts`); say why.
+          return send(
+            res,
+            500,
+            {
+              ok: false,
+              code: String(e?.code || 'Z_FAILED'),
+              error: String(e?.message || e),
+            },
+            corsOrigin,
+          );
+        }
         if ('empty' in r) {
           return send(
             res,

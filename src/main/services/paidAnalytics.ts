@@ -378,6 +378,10 @@ async function countVoidedLegacyRows(from: Date, to: Date): Promise<number> {
 export async function countVoidedTickets(
   from: Date,
   to: Date,
+  opts?: {
+    /** Throw instead of answering 0 when the count cannot be read. */
+    strict?: boolean;
+  },
 ): Promise<number> {
   const safe = safeFetchRange(from, to);
   try {
@@ -386,7 +390,8 @@ export async function countVoidedTickets(
     return (
       Number(row?.n || 0) + (await countVoidedLegacyRows(safe.from, safe.to))
     );
-  } catch {
+  } catch (e) {
+    if (opts?.strict) throw e;
     return 0;
   }
 }

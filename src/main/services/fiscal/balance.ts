@@ -94,10 +94,12 @@ function movementKey(docId: string): string {
   return `${KEY_PREFIX}movement:${docId}`;
 }
 
-async function readRecord(key: string): Promise<BalanceRecord | null> {
-  const row = await prisma.syncState
-    .findUnique({ where: { key } })
-    .catch(() => null);
+async function readRecord(
+  key: string,
+  strict = false,
+): Promise<BalanceRecord | null> {
+  const read = prisma.syncState.findUnique({ where: { key } });
+  const row = strict ? await read : await read.catch(() => null);
   const value = (row as any)?.valueJson;
   if (!value || typeof value !== 'object') return null;
   return value as BalanceRecord;
@@ -370,8 +372,15 @@ export async function initiateDailyBalance(
 export async function readDailyBalanceRecord(
   settings: SettingsDTO,
   dayKey = fiscalDayKey(),
+  opts?: {
+    /** Throw instead of answering "not declared" when it cannot be read. */
+    strict?: boolean;
+  },
 ): Promise<BalanceRecord | null> {
-  return readRecord(initiateKey(deviceKeyOf(settings), dayKey));
+  return readRecord(
+    initiateKey(deviceKeyOf(settings), dayKey),
+    opts?.strict === true,
+  );
 }
 
 /** Whether today's opening balance has been declared on this device. */

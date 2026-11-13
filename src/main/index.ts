@@ -4641,10 +4641,20 @@ ipcHandle('admin:printFiscalReceipt', async (_e, input) =>
 // Z report: the end-of-day close (`services/zReport.ts`).
 ipcHandle('admin:issueZReport', async (_e, input, ctx) => {
   const { issueZReport } = await import('./services/zReport');
-  const r = await issueZReport({
-    actorUserId: ctx?.session?.userId ?? null,
-    confirmEmpty: (input as any)?.confirmEmpty === true,
-  });
+  let r: Awaited<ReturnType<typeof issueZReport>>;
+  try {
+    r = await issueZReport({
+      actorUserId: ctx?.session?.userId ?? null,
+      confirmEmpty: (input as any)?.confirmEmpty === true,
+    });
+  } catch (e: any) {
+    // Nothing was numbered or kept (`zReport.ts`); say why.
+    return {
+      ok: false,
+      code: String(e?.code || 'Z_FAILED'),
+      error: String(e?.message || e),
+    };
+  }
   if ('empty' in r) {
     return {
       ok: false,

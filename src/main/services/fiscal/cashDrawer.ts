@@ -67,12 +67,14 @@ export type CashDeclarationLogEntry = {
 };
 
 /** The local record, newest last. */
-export async function listCashDeclarations(): Promise<
-  CashDeclarationLogEntry[]
-> {
-  const row = await prisma.syncState
-    .findUnique({ where: { key: CASH_DECLARATION_LOG_KEY } })
-    .catch(() => null);
+export async function listCashDeclarations(opts?: {
+  /** Throw instead of answering an empty log when it cannot be read. */
+  strict?: boolean;
+}): Promise<CashDeclarationLogEntry[]> {
+  const read = prisma.syncState.findUnique({
+    where: { key: CASH_DECLARATION_LOG_KEY },
+  });
+  const row = opts?.strict ? await read : await read.catch(() => null);
   const entries = (row?.valueJson as any)?.entries;
   return Array.isArray(entries) ? entries : [];
 }

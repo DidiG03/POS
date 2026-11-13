@@ -76,6 +76,12 @@ export type ZReport = {
     currency: string;
     opening: number | null;
     sales: number;
+    /**
+     * Cash given back in the period for sales paid in cash, whatever
+     * period those sales were in. It used to be left in "expected", so
+     * the drawer read over by every refund.
+     */
+    refunds: number;
     deposits: number | null;
     withdrawals: number | null;
     expected: number | null;
@@ -155,6 +161,16 @@ export function uniqueDeclarations<
   return out;
 }
 
+/** A correction that handed cash back: the sale it reverses was paid in cash. */
+export function correctionIsCashRefund(c: {
+  amountDelta: unknown;
+  order?: { payments?: Array<{ method?: string }> } | null;
+}): boolean {
+  if (!(cents(c.amountDelta) < 0)) return false;
+  const method = String(c.order?.payments?.[0]?.method || '').toUpperCase();
+  return method === 'CASH';
+}
+
 type Stored = { number: number; to: string };
 
 async function readJson<T>(key: string): Promise<T | null> {
@@ -164,12 +180,19 @@ async function readJson<T>(key: string): Promise<T | null> {
   return ((row as any)?.valueJson as T) ?? null;
 }
 
-async function writeJson(key: string, valueJson: unknown): Promise<void> {
-  await prisma.syncState.upsert({
-    where: { key },
-    create: { key, valueJson: valueJson as any },
-    update: { valueJson: valueJson as any },
-  });
+/** All or none. */
+async function writeJsonAll(
+  entries: Array<[key: string, valueJson: unknown]>,
+): Promise<void> {
+  await prisma.$transaction(
+    entries.map(([key, valueJson]) =>
+      prisma.syncState.upsert({
+        where: { key },
+        create: { key, valueJson: valueJson as any },
+        update: { valueJson: valueJson as any },
+      }),
+    ),
+  );
 }
 
 /**
@@ -186,9 +209,9 @@ async function openingFloatForPeriod(
   to: Date,
 ): Promise<{ amount: number; dayKey: string } | null> {
   for (const dayKey of fiscalDayKeysBetween(from.getTime(), to.getTime())) {
-    const record = await readDailyBalanceRecord(settings, dayKey).catch(
-      () => null,
-    );
+    const record = await readDailyBalanceRecord(settings, dayKey, {
+      strict: true,
+    });
     if (
       record?.state === 'COMPLETE' &&
       Number.isFinite(Number(record.amount))
@@ -205,14 +228,41 @@ function chunks<T>(list: T[], size: number): T[][] {
   return out;
 }
 
-/** The figures for `[from, to]`. Pure read: no number, nothing stored. */
+export const Z_COMPUTE_FAILED = 'Z_COMPUTE_FAILED';
+
+/**
+ * The figures for `[from, to]`. Pure read: no number, nothing stored.
+ *
+ * Every figure is read to the end or the whole report fails: a part that
+ * could not be read used to come out as zero, and the report was then
+ * numbered and kept with the wrong figures for good.
+ */
 export async function computeZReport(input: {
   from: Date;
   to: Date;
   settings?: unknown;
 }): Promise<Omit<ZReport, 'number' | 'issuedAt' | 'issuedByUserId'>> {
-  const settings: any =
-    input.settings ?? (await coreServices.readSettings().catch(() => ({})));
+  try {
+    return await computeZReportFigures(input);
+  } catch (e: any) {
+    console.error('[zReport] could not compute the report', e);
+    throw Object.assign(
+      new Error(
+        `The Z report could not be computed, so none was issued (${String(
+          e?.message || e,
+        )}). Try again.`,
+      ),
+      { code: Z_COMPUTE_FAILED, cause: e },
+    );
+  }
+}
+
+async function computeZReportFigures(input: {
+  from: Date;
+  to: Date;
+  settings?: unknown;
+}): Promise<Omit<ZReport, 'number' | 'issuedAt' | 'issuedByUserId'>> {
+  const settings: any = input.settings ?? (await coreServices.readSettings());
   const vatEnabled = isVatEnabledFromSettings(settings);
   const fiscalEnabled = settings?.fiscal?.enabled === true;
   const defaultVatRate = Number(settings?.defaultVatRate || 0);
@@ -239,27 +289,23 @@ export async function computeZReport(input: {
   /** Item gross per VAT rate, per order. */
   const lineRates = new Map<number, Map<number, number>>();
   for (const ids of chunks(orderIds, 500)) {
-    const payments = (await prisma.payment
-      .findMany({
-        where: { orderId: { in: ids } } as any,
-        select: { orderId: true, fiscalNivf: true } as any,
-      })
-      .catch(() => [])) as Array<{ orderId: number; fiscalNivf?: string }>;
+    const payments = (await prisma.payment.findMany({
+      where: { orderId: { in: ids } } as any,
+      select: { orderId: true, fiscalNivf: true } as any,
+    })) as Array<{ orderId: number; fiscalNivf?: string }>;
     for (const p of payments) {
       if (String(p.fiscalNivf || '').trim()) filedOrders.add(Number(p.orderId));
     }
     if (vatEnabled) {
-      const lines = (await prisma.orderItem
-        .findMany({
-          where: { orderId: { in: ids }, voidedAt: null } as any,
-          select: {
-            orderId: true,
-            qty: true,
-            unitPrice: true,
-            vatRate: true,
-          } as any,
-        })
-        .catch(() => [])) as Array<{
+      const lines = (await prisma.orderItem.findMany({
+        where: { orderId: { in: ids }, voidedAt: null } as any,
+        select: {
+          orderId: true,
+          qty: true,
+          unitPrice: true,
+          vatRate: true,
+        } as any,
+      })) as Array<{
         orderId?: unknown;
         qty: unknown;
         unitPrice: unknown;
@@ -316,30 +362,36 @@ export async function computeZReport(input: {
     }
   }
 
-  const corrections = (await prisma.saleCorrection
-    .findMany({
-      where: { createdAt: { gte: from, lte: to } } as any,
-      select: { kind: true, amountDelta: true } as any,
-    })
-    .catch(() => [])) as Array<{ kind: string; amountDelta: unknown }>;
+  const corrections = (await prisma.saleCorrection.findMany({
+    where: { createdAt: { gte: from, lte: to } } as any,
+    select: {
+      kind: true,
+      amountDelta: true,
+      order: { select: { payments: { select: { method: true } } } },
+    } as any,
+  })) as Array<{
+    kind: string;
+    amountDelta: unknown;
+    order?: { payments?: Array<{ method?: string }> } | null;
+  }>;
+  const cashRefundCents = corrections.reduce(
+    (a, c) => a + (correctionIsCashRefund(c) ? -cents(c.amountDelta) : 0),
+    0,
+  );
 
   const [voidedTickets, billsPrinted, queued, review, declarations, opening] =
     await Promise.all([
-      countVoidedTickets(from, to).catch(() => 0),
-      countBillEventsBetween(['BILL_PRINTED'], from, to).catch(() => 0),
+      countVoidedTickets(from, to, { strict: true }),
+      countBillEventsBetween(['BILL_PRINTED'], from, to),
       fiscalEnabled
-        ? listFiscalClaimsDeferred()
-            .then((r) => r.length)
-            .catch(() => 0)
+        ? listFiscalClaimsDeferred().then((r) => r.length)
         : Promise.resolve(0),
       fiscalEnabled
-        ? listFiscalClaimsNeedingReview()
-            .then((r) => r.length)
-            .catch(() => 0)
+        ? listFiscalClaimsNeedingReview().then((r) => r.length)
         : Promise.resolve(0),
-      listCashDeclarations().catch(() => []),
+      listCashDeclarations({ strict: true }),
       fiscalEnabled
-        ? openingFloatForPeriod(settings, from, to).catch(() => null)
+        ? openingFloatForPeriod(settings, from, to)
         : Promise.resolve(null),
     ]);
   const inPeriod = uniqueDeclarations(declarations).filter((d) => {
@@ -415,13 +467,18 @@ export async function computeZReport(input: {
       currency,
       opening: openingTill == null ? null : fromCents(openingTill),
       sales: fromCents(cashSalesCents),
+      refunds: fromCents(cashRefundCents),
       deposits: depositsTill == null ? null : fromCents(depositsTill),
       withdrawals: withdrawalsTill == null ? null : fromCents(withdrawalsTill),
       expected:
         openingTill == null || depositsTill == null || withdrawalsTill == null
           ? null
           : fromCents(
-              openingTill + cashSalesCents + depositsTill - withdrawalsTill,
+              openingTill +
+                cashSalesCents -
+                cashRefundCents +
+                depositsTill -
+                withdrawalsTill,
             ),
       declared: {
         currency: 'ALL',
@@ -494,9 +551,13 @@ export async function issueZReport(input: {
       issuedByUserId: Number(input.actorUserId || 0) || null,
     };
     // The report is stored before it is printed: a printer problem never
-    // loses a Z or lets the same period be closed twice.
-    await writeJson(recordKey(report.number), report);
-    await writeJson(LAST_KEY, { number: report.number, to: report.to });
+    // loses a Z or lets the same period be closed twice. Report and pointer
+    // go in one transaction: a crash between the two used to leave a
+    // report whose number the next Z took again.
+    await writeJsonAll([
+      [recordKey(report.number), report],
+      [LAST_KEY, { number: report.number, to: report.to }],
+    ]);
     const printed = await (input.print ?? printZReport)(report, false).catch(
       () => false,
     );
