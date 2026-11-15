@@ -23,7 +23,13 @@ export type BillEventKind =
   | 'SERVICE_CHARGE_REMOVED'
   | 'PRICE_CORRECTED'
   /** A bill printed before payment: nothing taken off, but counted. */
-  | 'BILL_PRINTED';
+  | 'BILL_PRINTED'
+  /** A table freed by an admin with unpaid items still on its bill. */
+  | 'TABLE_CLOSED_UNPAID'
+  /** A paid sale cancelled in Admin (the whole sale reversed). */
+  | 'SALE_CANCELLED'
+  /** Part of a paid sale refunded in Admin (a corrective invoice). */
+  | 'SALE_REFUNDED';
 
 export const BILL_EVENT_KINDS: readonly BillEventKind[] = [
   'VOID_ITEM',
@@ -33,6 +39,9 @@ export const BILL_EVENT_KINDS: readonly BillEventKind[] = [
   'SERVICE_CHARGE_REMOVED',
   'PRICE_CORRECTED',
   'BILL_PRINTED',
+  'TABLE_CLOSED_UNPAID',
+  'SALE_CANCELLED',
+  'SALE_REFUNDED',
 ];
 
 export type BillEventSource = 'till' | 'phone' | 'auto';
@@ -86,6 +95,7 @@ const SELF_APPROVED_KINDS = new Set<BillEventKind>([
   'VOID_TICKET',
   'DISCOUNT',
   'SERVICE_CHARGE_REMOVED',
+  'TABLE_CLOSED_UNPAID',
 ]);
 const MAX_LINES = 60;
 
@@ -156,12 +166,16 @@ export async function recordBillEvent(
   const roles = new Map<number, string>();
   const ids = [actorUserId, approvedById].filter((n): n is number => n != null);
   if (ids.length) {
-    const users = await db.user
-      .findMany({
+    // Names are a nicety: a failed lookup still records the event.
+    let users: Array<{ id: number; displayName: string; role?: string }> = [];
+    try {
+      users = await db.user.findMany({
         where: { id: { in: ids } },
         select: { id: true, displayName: true, role: true },
-      })
-      .catch(() => []);
+      });
+    } catch {
+      users = [];
+    }
     for (const u of users) {
       names.set(Number(u.id), String(u.displayName || ''));
       roles.set(Number(u.id), String(u.role || '').toUpperCase());

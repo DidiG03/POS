@@ -32,6 +32,7 @@ import {
 } from './services/sentry';
 initSentry();
 import { resolveHostIntent } from '@shared/tableIntent';
+import { setTableOpenGuarded } from './services/tableClose';
 import { coreServices, peekCachedSettings } from './services/core';
 import { verifyManagerPin } from './services/managerPin';
 import { checkPaymentApproval } from './services/paymentApproval';
@@ -1127,14 +1128,15 @@ function startAutoCloseShiftsLoop() {
           const parsed = splitTableKey(String(key));
           if (!parsed) continue;
           const { area, label: tableLabel } = parsed;
-          const last = await prisma.ticketLog
-            .findFirst({
-              where: { area, tableLabel },
-              orderBy: { createdAt: 'desc' },
-              select: { userId: true },
-            })
-            .catch(() => null);
-          if (last?.userId) usersWithOpenTickets.add(Number(last.userId));
+          // This sitting's owner. The newest row by `createdAt` could be a
+          // previous party's (mixed date storage, `tableSession.ts`).
+          const last = await findLatestTicketLogForCurrentSession(
+            area,
+            tableLabel,
+          ).catch(() => null);
+          if ((last as any)?.userId) {
+            usersWithOpenTickets.add(Number((last as any).userId));
+          }
         }
       }
 
@@ -1142,10 +1144,27 @@ function startAutoCloseShiftsLoop() {
         // Hard guard: never close a shift while the user still has an open ticket.
         if (usersWithOpenTickets.has(Number(s.openedById))) continue;
         try {
-          await prisma.dayShift.update({
-            where: { id: s.id },
-            data: { closedAt: new Date(), closedById: s.openedById },
-          });
+          // Same lock and the same close as a clock-out, so a person
+          // clocking out at this moment is not closed twice, and the shift
+          // gets its summary and slip (`finalizeShiftAfterClockOut`).
+          const closedAt = new Date();
+          const closed = await withShiftLock(Number(s.openedById), () =>
+            prisma.dayShift.updateMany({
+              where: { id: s.id, closedAt: null },
+              data: { closedAt, closedById: s.openedById },
+            }),
+          );
+          if (!Number((closed as any)?.count)) continue;
+          await finalizeShiftAfterClockOut({
+            shiftId: s.id,
+            userId: Number(s.openedById),
+            openedAt: new Date(s.openedAt),
+            closedAt,
+            cashCounted: null,
+            autoClosed: true,
+          }).catch((e) =>
+            console.warn('[shifts] auto-closed shift summary failed:', e),
+          );
           await prisma.notification
             .create({
               data: {
@@ -3330,15 +3349,23 @@ ipcHandle('reports:printMyDaySummary', async (_e, input, ctx) => {
 });
 
 // Persist open tables in SyncState - Local-first: always use local DB
-ipcHandle('tables:setOpen', async (_e, input) => {
+ipcHandle('tables:setOpen', async (_e, input, ctx) => {
   const area = String(input?.area || '');
   const label = String(input?.label || '');
   const open = Boolean(input?.open);
   assertStoreCounterAllowed(area);
   // Only tables on the floor plan can be opened (`floorTables.ts`).
   if (open && !(await checkFloorTable(area, label)).ok) return false;
-  return setTableOpenWithSideEffects(area, label, open, {
-    intentAt: resolveHostIntent(input || {}),
+  // A table with unpaid items is not freed here (`tableClose.ts`).
+  return setTableOpenGuarded({
+    area,
+    label,
+    open,
+    options: { intentAt: resolveHostIntent(input || {}) },
+    actor: ctx?.session
+      ? { userId: ctx.session.userId, role: String(ctx.session.role || '') }
+      : null,
+    source: 'till',
   });
 });
 

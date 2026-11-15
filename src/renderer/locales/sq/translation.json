@@ -351,6 +351,8 @@
       "SERVICE_CHARGE_REMOVED": "Shërbimi i hequr",
       "PRICE_CORRECTED": "Çmime të korrigjuara",
       "AUTO_VOID": "Anulime automatike",
+      "TABLE_CLOSED_UNPAID": "Tavolina të mbyllura pa paguar",
+      "REFUNDS": "Rimbursime dhe anulime",
       "BILL_PRINTED": "Llogari të printuara"
     },
     "kind": {
@@ -360,7 +362,10 @@
       "DISCOUNT": "Zbritje",
       "SERVICE_CHARGE_REMOVED": "Shërbimi i hequr",
       "PRICE_CORRECTED": "Çmim i korrigjuar nga arka",
-      "BILL_PRINTED": "Llogari e printuar para pagesës"
+      "BILL_PRINTED": "Llogari e printuar para pagesës",
+      "TABLE_CLOSED_UNPAID": "Tavolinë e mbyllur me artikuj të papaguar",
+      "SALE_CANCELLED": "Shitje e paguar e anuluar",
+      "SALE_REFUNDED": "Shitje e paguar e rimbursuar"
     }
   },
   "login": {

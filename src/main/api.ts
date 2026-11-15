@@ -122,7 +122,6 @@ import { getFloorSnapshot } from './services/floorSnapshot';
 import { asTicketLogItems, ticketCreatedAtIso } from '@shared/ticketLogItems';
 import { readTableMerges, writeTableMerges } from './services/tableMerges';
 import { transferTableLocal } from './services/tableTransfer';
-import { setTableOpenWithSideEffects } from './services/tableOpen';
 import { checkFloorTable } from './services/floorTables';
 import { markRepeatedKitchenSlip } from './services/slipRepeat';
 import { countLowStockMenuItems } from './services/menuStock';
@@ -275,6 +274,7 @@ import {
 } from './services/lanHostHeader';
 import { planTicketVoid } from '@shared/voidPaid';
 import { applySaleCorrection } from './services/saleCorrection';
+import { setTableOpenGuarded } from './services/tableClose';
 import {
   gzipBodyIfAccepted,
   gzipHtmlIfAccepted,
@@ -4111,15 +4111,16 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             );
           }
         }
-        const ok = await setTableOpenWithSideEffects(
-          areaTrim,
-          labelTrim,
-          Boolean(open),
-          {
-            intentAt: resolveHostIntent(body || {}),
-          },
-        );
-        if (!ok) return send(res, 400, 'invalid', corsOrigin);
+        // A table with unpaid items is not freed here (`tableClose.ts`).
+        const outcome = await setTableOpenGuarded({
+          area: areaTrim,
+          label: labelTrim,
+          open: Boolean(open),
+          options: { intentAt: resolveHostIntent(body || {}) },
+          actor: auth ? { userId: auth.userId, role: String(auth.role) } : null,
+          source: 'phone',
+        });
+        if (outcome !== true) return send(res, 409, outcome, corsOrigin);
         return send(res, 200, 'ok', corsOrigin);
       }
       if (req.method === 'GET' && pathname === '/tables/open') {

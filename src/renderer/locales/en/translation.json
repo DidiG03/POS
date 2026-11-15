@@ -351,6 +351,8 @@
       "SERVICE_CHARGE_REMOVED": "Service charge removed",
       "PRICE_CORRECTED": "Prices corrected",
       "AUTO_VOID": "Automatic voids",
+      "TABLE_CLOSED_UNPAID": "Tables closed unpaid",
+      "REFUNDS": "Refunds & cancellations",
       "BILL_PRINTED": "Bills printed"
     },
     "kind": {
@@ -360,7 +362,10 @@
       "DISCOUNT": "Discount",
       "SERVICE_CHARGE_REMOVED": "Service charge removed",
       "PRICE_CORRECTED": "Price corrected by the till",
-      "BILL_PRINTED": "Bill printed before payment"
+      "BILL_PRINTED": "Bill printed before payment",
+      "TABLE_CLOSED_UNPAID": "Table closed with unpaid items",
+      "SALE_CANCELLED": "Paid sale cancelled",
+      "SALE_REFUNDED": "Paid sale refunded"
     }
   },
   "login": {

@@ -36,6 +36,8 @@ export type KindFilter =
   | 'SERVICE_CHARGE_REMOVED'
   | 'PRICE_CORRECTED'
   | 'AUTO_VOID'
+  | 'TABLE_CLOSED_UNPAID'
+  | 'REFUNDS'
   | 'BILL_PRINTED';
 
 export const KIND_FILTERS: Record<KindFilter, BillEventKindDTO[] | null> = {
@@ -45,6 +47,8 @@ export const KIND_FILTERS: Record<KindFilter, BillEventKindDTO[] | null> = {
   SERVICE_CHARGE_REMOVED: ['SERVICE_CHARGE_REMOVED'],
   PRICE_CORRECTED: ['PRICE_CORRECTED'],
   AUTO_VOID: ['AUTO_VOID'],
+  TABLE_CLOSED_UNPAID: ['TABLE_CLOSED_UNPAID'],
+  REFUNDS: ['SALE_CANCELLED', 'SALE_REFUNDED'],
   BILL_PRINTED: ['BILL_PRINTED'],
 };
 

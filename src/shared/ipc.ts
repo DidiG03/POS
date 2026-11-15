@@ -1217,7 +1217,10 @@ export type BillEventKindDTO =
   | 'DISCOUNT'
   | 'SERVICE_CHARGE_REMOVED'
   | 'PRICE_CORRECTED'
-  | 'BILL_PRINTED';
+  | 'BILL_PRINTED'
+  | 'TABLE_CLOSED_UNPAID'
+  | 'SALE_CANCELLED'
+  | 'SALE_REFUNDED';
 
 export interface BillEventDTO {
   id: number;
@@ -2081,7 +2084,11 @@ export interface ApiTables {
      * The till subtracts this from its own clock.
      */
     intentAgeMs?: number,
-  ): Promise<boolean>;
+  ): Promise<
+    | boolean
+    /** Refused: the table still has unpaid items (`tableClose.ts`). */
+    | { ok: false; code: string; error: string; permanent: true }
+  >;
   listOpen(): Promise<{ area: string; label: string }[]>;
   /**
    * Occupied tables for one area (or every area) in a single round-trip:

@@ -696,7 +696,20 @@ export async function applyQueuedTableOpen(
       // close already landed.
     }
   }
-  await window.api.tables.setOpen(area, label, open, intentAgeMs);
+  const result = await window.api.tables.setOpen(
+    area,
+    label,
+    open,
+    intentAgeMs,
+  );
+  // The till refused to free a table with unpaid items. Retrying will not
+  // change that; it belongs on the failed-sync panel.
+  if (result && typeof result === 'object' && result.ok === false) {
+    const err: any = new Error(result.error || 'The till refused this');
+    err.code = result.code;
+    err.permanent = true;
+    throw err;
+  }
 }
 
 /**
