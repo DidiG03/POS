@@ -62,6 +62,9 @@ type PrintCopy = {
   cashExpected: string;
   cashOver: string;
   cashShort: string;
+  /** Shift slip of a shift the till closed by itself. */
+  shiftAutoClosed: string;
+  cashNotCounted: string;
   /** Kitchen slip banners: a void, a reprint, a slip printed late. */
   voidBanner: string;
   cancelledBanner: string;
@@ -117,6 +120,8 @@ const EN: PrintCopy = {
   cashExpected: 'Cash expected',
   cashOver: 'Over',
   cashShort: 'SHORT',
+  shiftAutoClosed: 'CLOSED AUTOMATICALLY',
+  cashNotCounted: 'CASH NOT COUNTED',
   voidBanner: '*** VOID - DO NOT MAKE ***',
   cancelledBanner: '*** ORDER CANCELLED ***',
   reprintBanner: (at) => `REPRINT - sent ${at}`,
@@ -170,6 +175,8 @@ const SQ: PrintCopy = {
   cashExpected: 'Para të pritura',
   cashOver: 'Tepricë',
   cashShort: 'MUNGESË',
+  shiftAutoClosed: 'MBYLLUR AUTOMATIKISHT',
+  cashNotCounted: 'PARATË NUK U NUMËRUAN',
   voidBanner: '*** ANULUAR - MOS E PERGATIT ***',
   cancelledBanner: '*** POROSIA U ANULUA ***',
   reprintBanner: (at) => `RIPRINTIM - derguar ${at}`,

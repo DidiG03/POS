@@ -394,6 +394,10 @@ export type ShiftClosePrintSummary = {
   byMethod: { method: string; amount: number }[];
   /** The cash the person counted at clock-out (`@shared/cashCount`). */
   cashCount?: { expected: number; counted: number; difference: number };
+  /** The till closed this shift by itself (`autoCloseShift`). */
+  autoClosed?: boolean;
+  /** The venue asks for a cash count and none was made. */
+  cashNotCounted?: boolean;
 };
 
 export function buildEscposShiftSummary(
@@ -462,6 +466,15 @@ export function buildEscposShiftSummary(
         ),
       );
     }
+  }
+  if (summary.autoClosed) {
+    lines.push(escposText(`${layout.sep}\n`));
+    lines.push(cmdBold(true));
+    lines.push(escposText(`${copy.shiftAutoClosed}\n`));
+    if (summary.cashNotCounted) {
+      lines.push(escposText(`${copy.cashNotCounted}\n`));
+    }
+    lines.push(cmdBold(false));
   }
   if (summary.cashCount) {
     const cc = summary.cashCount;

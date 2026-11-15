@@ -8,7 +8,7 @@ vi.mock('@db/client', () => ({
   prisma: {
     user: { findUnique: (...a: any[]) => userFindUnique(...a) },
     order: { findMany: (...a: any[]) => orderFindMany(...a) },
-    dayShift: { update: vi.fn() },
+    dayShift: { update: vi.fn(async () => ({})) },
   },
 }));
 
@@ -21,7 +21,17 @@ vi.mock('./printDispatcher', () => ({
   pickActiveReceiptProfile: vi.fn(),
 }));
 
-import { computeShiftPaidTotals } from './shiftSummary';
+const notices: any[] = [];
+vi.mock('./adminAlerts', () => ({
+  notifyAdminsAndActor: async (n: any) => {
+    notices.push(n);
+  },
+}));
+
+import {
+  computeShiftPaidTotals,
+  finalizeShiftAfterClockOut,
+} from './shiftSummary';
 
 describe('computeShiftPaidTotals', () => {
   beforeEach(() => {
@@ -112,5 +122,58 @@ describe('computeShiftPaidTotals', () => {
     });
     expect(summary.orders).toBe(1);
     expect(summary.revenueGross).toBe(1200);
+  });
+});
+
+describe('finalizeShiftAfterClockOut — closed automatically', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    notices.length = 0;
+    userFindUnique.mockResolvedValue({ displayName: 'Ada' });
+    orderFindMany.mockResolvedValue([
+      {
+        id: 1,
+        userId: 7,
+        area: 'Sallon',
+        tableLabel: '12',
+        total: 40,
+        closedAt: new Date('2026-09-05T12:00:00Z'),
+        subtotal: 40,
+        vatAmount: 0,
+        payments: [{ method: 'CASH', amount: 40, metaJson: {} }],
+      },
+    ]);
+  });
+
+  const run = () =>
+    finalizeShiftAfterClockOut({
+      shiftId: 3,
+      userId: 7,
+      openedAt: new Date('2026-09-05T10:00:00Z'),
+      closedAt: new Date('2026-09-06T10:00:00Z'),
+      cashCounted: null,
+      autoClosed: true,
+    });
+
+  it('keeps a summary and says the cash was not counted', async () => {
+    readSettings.mockResolvedValue({
+      preferences: { cashCountAtClockOut: true },
+    });
+    const summary = await run();
+    expect(summary.revenueGross).toBe(40);
+    expect(summary.autoClosed).toBe(true);
+    expect(summary.cashNotCounted).toBe(true);
+    expect(summary.cashCount).toBeUndefined();
+    expect(notices).toHaveLength(1);
+    expect(notices[0].message).toContain('not counted');
+    expect(notices[0].message).toContain('40.00');
+  });
+
+  it('does not ask for a count the venue does not take', async () => {
+    readSettings.mockResolvedValue({});
+    const summary = await run();
+    expect(summary.autoClosed).toBe(true);
+    expect(summary.cashNotCounted).toBeUndefined();
+    expect(notices).toEqual([]);
   });
 });

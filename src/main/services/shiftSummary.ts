@@ -4,7 +4,7 @@ import { isVatEnabledFromSettings } from '@shared/vatFromFiscal';
 import { prisma } from '@db/client';
 import { roundMoney } from '@shared/money';
 import { coreServices } from './core';
-import { cashCountResult } from '@shared/cashCount';
+import { cashCountAtClockOut, cashCountResult } from '@shared/cashCount';
 import { saleMethodAmounts } from '@shared/paymentSplits';
 import { notifyAdminsAndActor } from './adminAlerts';
 import { logIgnored } from './logIgnored';
@@ -176,12 +176,33 @@ export async function finalizeShiftAfterClockOut(args: {
   closedAt: Date;
   /** Cash counted at clock-out, when the venue asks for a count. */
   cashCounted?: number | null;
+  /**
+   * The till closed the shift by itself (`autoCloseShift`): nobody was
+   * there to count the cash, and the slip and the admins say so.
+   */
+  autoClosed?: boolean;
 }): Promise<ShiftClosePrintSummary> {
   const summary = await computeShiftPaidTotals({
     userId: args.userId,
     openedAt: args.openedAt,
     closedAt: args.closedAt,
   });
+  if (args.autoClosed) {
+    summary.autoClosed = true;
+    const settingsNow = await coreServices.readSettings().catch(() => null);
+    if (cashCountAtClockOut(settingsNow)) {
+      summary.cashNotCounted = true;
+      const expected =
+        summary.byMethod.find((m) => m.method.toUpperCase() === 'CASH')
+          ?.amount ?? 0;
+      await notifyAdminsAndActor({
+        type: 'SECURITY',
+        message:
+          `${summary.waiterName}'s shift was closed automatically, so their cash was not counted. ` +
+          `Cash sales in the shift: ${expected.toFixed(2)}. Count it with them.`,
+      }).catch(logIgnored('shiftSummary:autoCloseNotice', undefined));
+    }
+  }
   if (typeof args.cashCounted === 'number') {
     const expected =
       summary.byMethod.find((m) => m.method.toUpperCase() === 'CASH')?.amount ??
