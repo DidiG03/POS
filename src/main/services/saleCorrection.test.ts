@@ -8,7 +8,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { db, flagged, notified, kv } = vi.hoisted(() => ({
+const { db, flagged, notified, kv, billEvents } = vi.hoisted(() => ({
   kv: new Map<string, any>(),
   db: {
     orders: new Map<number, any>(),
@@ -19,10 +19,18 @@ const { db, flagged, notified, kv } = vi.hoisted(() => ({
   },
   flagged: [] as any[],
   notified: [] as any[],
+  billEvents: [] as any[],
 }));
 
 vi.mock('@db/client', () => ({
   prisma: {
+    billEvent: {
+      create: vi.fn(async ({ data }: any) => {
+        billEvents.push(data);
+        return data;
+      }),
+    },
+    user: { findMany: vi.fn(async () => []) },
     order: {
       findUnique: vi.fn(async ({ where }: any) => {
         const order = db.orders.get(Number(where.id));
@@ -308,6 +316,7 @@ beforeEach(() => {
   db.nextCorrectionId = 1;
   flagged.length = 0;
   notified.length = 0;
+  billEvents.length = 0;
   claims.clear();
   locks.clear();
   printed.length = 0;
@@ -476,6 +485,52 @@ describe('applySaleCorrection — cancellation', () => {
     });
     expect(db.corrections[0].filedAt).toBeInstanceOf(Date);
     expect(flagged).toHaveLength(0);
+  });
+});
+
+describe('applySaleCorrection — permanent record', () => {
+  it('records a cancellation next to voids and discounts', async () => {
+    seedSale();
+    await applySaleCorrection({
+      orderId: 1,
+      kind: 'CANCEL',
+      reason: 'Guest never served',
+      actorUserId: 7,
+      approvedById: 8,
+    });
+    expect(billEvents).toHaveLength(1);
+    expect(billEvents[0]).toMatchObject({
+      kind: 'SALE_CANCELLED',
+      area: 'Salla',
+      tableLabel: 'T7',
+      actorUserId: 7,
+      approvedById: 8,
+      amount: '1500.00',
+      reason: 'Guest never served',
+    });
+    expect(billEvents[0].detailsJson.orderId).toBe(1);
+    expect(billEvents[0].detailsJson.lines.length).toBeGreaterThan(0);
+  });
+
+  it('records a refund of some lines with only those lines', async () => {
+    seedSale();
+    await applySaleCorrection({
+      orderId: 1,
+      kind: 'CORRECTIVE',
+      itemIds: [11],
+      reason: 'Coffee charged twice',
+    });
+    expect(billEvents[0]).toMatchObject({
+      kind: 'SALE_REFUNDED',
+      amount: '500.00',
+    });
+    expect(billEvents[0].detailsJson.lines).toHaveLength(1);
+  });
+
+  it('records nothing when the correction is refused', async () => {
+    seedSale();
+    await applySaleCorrection({ orderId: 1, kind: 'CANCEL', reason: 'x' });
+    expect(billEvents).toEqual([]);
   });
 });
 

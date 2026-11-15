@@ -66,6 +66,7 @@ import { fiscalTinFromSettings, tinFromVerifyUrl } from '@shared/fiscalReceipt';
 import type { FiscalDocInfo } from './fiscal/completion';
 import { restockMenuStockForLines } from './menuStock';
 import { logIgnored } from './logIgnored';
+import { billEventLines, recordBillEvent } from './billEvents';
 
 export type FiscalSaleRow = {
   orderId: number;
@@ -1249,6 +1250,33 @@ async function applySaleCorrectionNow(
   } catch (e) {
     if (e instanceof CorrectionRaceError) return { ok: false, error: e.error };
     throw e;
+  }
+
+  // The permanent record, next to voids and discounts (`billEvents.ts`).
+  // Written before the fiscal filing, which can take a while or fail: the
+  // money has been handed back either way.
+  {
+    // Every live line for a cancellation; the chosen ones for a refund.
+    const reversed = plan.struckLines;
+    await recordBillEvent({
+      kind: plan.cancelsSale ? 'SALE_CANCELLED' : 'SALE_REFUNDED',
+      area: String((order as any).area || ''),
+      tableLabel: String((order as any).tableLabel || ''),
+      actorUserId: Number(input.actorUserId) || null,
+      approvedById: Number(input.approvedById) || null,
+      amount: Math.abs(roundMoney(plan.amountDelta)),
+      reason: plan.reason,
+      details: {
+        orderId,
+        correctionId,
+        method: String(payment?.method || '') || null,
+        lines: billEventLines(reversed),
+        saleTotal: num((order as any).total),
+        fiscalized: Boolean(
+          String(payment?.fiscalNslf || payment?.fiscalNivf || '').trim(),
+        ),
+      },
+    });
   }
 
   const docId = String(payment?.idempotencyKey || '').trim();
