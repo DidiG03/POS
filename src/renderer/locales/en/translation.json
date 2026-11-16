@@ -353,6 +353,7 @@
       "AUTO_VOID": "Automatic voids",
       "TABLE_CLOSED_UNPAID": "Tables closed unpaid",
       "REFUNDS": "Refunds & cancellations",
+      "TRANSFERS": "Table moves",
       "BILL_PRINTED": "Bills printed"
     },
     "kind": {
@@ -365,7 +366,8 @@
       "BILL_PRINTED": "Bill printed before payment",
       "TABLE_CLOSED_UNPAID": "Table closed with unpaid items",
       "SALE_CANCELLED": "Paid sale cancelled",
-      "SALE_REFUNDED": "Paid sale refunded"
+      "SALE_REFUNDED": "Paid sale refunded",
+      "TABLE_TRANSFERRED": "Table moved"
     }
   },
   "login": {

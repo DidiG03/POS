@@ -59,3 +59,35 @@ describe('billEventSummary', () => {
     );
   });
 });
+
+describe('table moves', () => {
+  const move = {
+    id: 9,
+    kind: 'TABLE_TRANSFERRED',
+    area: 'Main',
+    tableLabel: 'T1',
+    actorUserId: 2,
+    actorName: 'Ben',
+    approvedById: null,
+    approverName: null,
+    amount: 6,
+    reason: null,
+    source: 'phone',
+    details: {
+      toArea: 'Main',
+      toLabel: 'T4',
+      fromOwnerName: 'Ben',
+      toOwnerName: 'Cara',
+      lines: [{ name: 'Beer', qty: 2, unitPrice: 3 }],
+    },
+    createdAt: '2026-11-16T10:00:00.000Z',
+  } as any;
+
+  it('says where the table went and to whom', () => {
+    expect(billEventSummary(move)).toBe('→ Main T4 · Ben → Cara · 2 × Beer');
+  });
+
+  it('is counted but not added to what came off bills', () => {
+    expect(billEventsTotals([move])).toEqual({ count: 1, amount: 0 });
+  });
+});

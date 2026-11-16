@@ -3407,6 +3407,7 @@ ipcHandle('tables:transfer', async (_e, payload, ctx) => {
       toUserId: input.toUserId,
       actorUserId: resolveActorUserId(ctx, input.actorUserId),
       idempotencyKey: input.idempotencyKey,
+      source: 'till',
     });
   } catch (e: any) {
     return { ok: false, error: String(e?.message || e || 'Transfer failed') };

@@ -29,7 +29,9 @@ export type BillEventKind =
   /** A paid sale cancelled in Admin (the whole sale reversed). */
   | 'SALE_CANCELLED'
   /** Part of a paid sale refunded in Admin (a corrective invoice). */
-  | 'SALE_REFUNDED';
+  | 'SALE_REFUNDED'
+  /** A table moved to another table or handed to another waiter. */
+  | 'TABLE_TRANSFERRED';
 
 export const BILL_EVENT_KINDS: readonly BillEventKind[] = [
   'VOID_ITEM',
@@ -42,6 +44,7 @@ export const BILL_EVENT_KINDS: readonly BillEventKind[] = [
   'TABLE_CLOSED_UNPAID',
   'SALE_CANCELLED',
   'SALE_REFUNDED',
+  'TABLE_TRANSFERRED',
 ];
 
 export type BillEventSource = 'till' | 'phone' | 'auto';

@@ -21,6 +21,13 @@ import {
   setTableOccupied,
 } from './tableOccupancy';
 import { checkFloorTable } from './floorTables';
+import {
+  billEventLines,
+  billEventLinesAmount,
+  recordBillEvent,
+  type BillEventSource,
+} from './billEvents';
+import { unpaidBillLines } from './tableClose';
 
 export type TransferTableInput = {
   fromArea: string;
@@ -35,6 +42,8 @@ export type TransferTableInput = {
   actorUserId: number;
   /** Dedupes double-submit / offline retries (stored on the new destination TicketLog row). */
   idempotencyKey?: string | null;
+  /** Where the move was made, for the permanent record. */
+  source?: BillEventSource;
 };
 
 export type TransferTableResult = { ok: true } | { ok: false; error: string };
@@ -642,6 +651,30 @@ async function transferTableUnderLock(
         } as any,
       })
       .catch(() => null);
+  }
+
+  // The permanent record (`billEvents.ts`): a move is a step in moving
+  // items out of sight, and the notification below is gone in a week.
+  {
+    const lines = billEventLines(unpaidBillLines(last.itemsJson));
+    await recordBillEvent({
+      kind: 'TABLE_TRANSFERRED',
+      area: fromArea,
+      tableLabel: fromLabel,
+      actorUserId,
+      amount: billEventLinesAmount(lines),
+      source: input.source,
+      details: {
+        toArea,
+        toLabel,
+        movedTable: movingTable,
+        fromOwnerId: currentOwnerId || null,
+        fromOwnerName,
+        toOwnerId: changingOwner ? Number(toUserId) : currentOwnerId || null,
+        toOwnerName: changingOwner ? newOwnerName : fromOwnerName,
+        lines,
+      },
+    });
   }
 
   // Notify all admins so the transfer is auditable from the admin

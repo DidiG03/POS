@@ -4177,6 +4177,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           actorUserId,
           idempotencyKey:
             String(body?.idempotencyKey ?? '').trim() || undefined,
+          source: 'phone',
         } as any).catch((e: any) => ({
           ok: false as const,
           error: String(e?.message || e || 'Transfer failed'),

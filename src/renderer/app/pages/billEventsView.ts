@@ -38,6 +38,7 @@ export type KindFilter =
   | 'AUTO_VOID'
   | 'TABLE_CLOSED_UNPAID'
   | 'REFUNDS'
+  | 'TRANSFERS'
   | 'BILL_PRINTED';
 
 export const KIND_FILTERS: Record<KindFilter, BillEventKindDTO[] | null> = {
@@ -49,8 +50,22 @@ export const KIND_FILTERS: Record<KindFilter, BillEventKindDTO[] | null> = {
   AUTO_VOID: ['AUTO_VOID'],
   TABLE_CLOSED_UNPAID: ['TABLE_CLOSED_UNPAID'],
   REFUNDS: ['SALE_CANCELLED', 'SALE_REFUNDED'],
+  TRANSFERS: ['TABLE_TRANSFERRED'],
   BILL_PRINTED: ['BILL_PRINTED'],
 };
+
+/** Kinds that need nobody's approval: the column shows a dash. */
+export const NO_APPROVAL_KINDS: ReadonlySet<string> = new Set([
+  'PRICE_CORRECTED',
+  'AUTO_VOID',
+  'BILL_PRINTED',
+  'TABLE_TRANSFERRED',
+]);
+
+/** False for events that move or count a bill without taking money off. */
+export function eventTakesMoneyOff(kind: string): boolean {
+  return kind !== 'BILL_PRINTED' && kind !== 'TABLE_TRANSFERRED';
+}
 
 export function billEventsTotals(rows: BillEventDTO[]): {
   count: number;
@@ -58,8 +73,8 @@ export function billEventsTotals(rows: BillEventDTO[]): {
 } {
   let amount = 0;
   for (const r of rows) {
-    // A bill printed is counted, but nothing came off it.
-    if (r.kind === 'BILL_PRINTED') continue;
+    // A bill printed, or a table moved, is counted, but nothing came off it.
+    if (!eventTakesMoneyOff(r.kind)) continue;
     if (r.amount != null) amount += Number(r.amount) || 0;
   }
   return { count: rows.length, amount: Math.round(amount * 100) / 100 };
@@ -80,6 +95,15 @@ function linesText(lines: unknown, max: number): string {
 export function billEventSummary(r: BillEventDTO, full = false): string {
   const d = (r.details || {}) as Record<string, unknown>;
   const parts: string[] = [];
+  if (r.kind === 'TABLE_TRANSFERRED') {
+    const to = [d.toArea, d.toLabel].filter(Boolean).join(' ');
+    if (to && to !== `${r.area} ${r.tableLabel}`) parts.push(`→ ${to}`);
+    if (d.toOwnerName && d.toOwnerName !== d.fromOwnerName) {
+      parts.push(
+        `${String(d.fromOwnerName || '?')} → ${String(d.toOwnerName)}`,
+      );
+    }
+  }
   const lines = linesText(d.lines, full ? 60 : 3);
   if (lines) parts.push(lines);
   if (r.kind === 'DISCOUNT' && d.discountType) {

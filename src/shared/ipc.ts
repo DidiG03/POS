@@ -1220,7 +1220,8 @@ export type BillEventKindDTO =
   | 'BILL_PRINTED'
   | 'TABLE_CLOSED_UNPAID'
   | 'SALE_CANCELLED'
-  | 'SALE_REFUNDED';
+  | 'SALE_REFUNDED'
+  | 'TABLE_TRANSFERRED';
 
 export interface BillEventDTO {
   id: number;

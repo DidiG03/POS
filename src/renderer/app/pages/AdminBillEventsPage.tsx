@@ -18,6 +18,7 @@ import {
   billEventSummary,
   billEventsTotals,
   KIND_FILTERS,
+  NO_APPROVAL_KINDS,
   type KindFilter,
   rangeForPreset,
   type RangePreset,
@@ -109,6 +110,9 @@ export default function AdminBillEventsPage() {
     'SERVICE_CHARGE_REMOVED',
     'PRICE_CORRECTED',
     'AUTO_VOID',
+    'TABLE_CLOSED_UNPAID',
+    'REFUNDS',
+    'TRANSFERS',
     'BILL_PRINTED',
   ];
 
@@ -242,18 +246,13 @@ export default function AdminBillEventsPage() {
                       </Td>
                       <Td
                         className={
-                          approver ||
-                          r.kind === 'PRICE_CORRECTED' ||
-                          r.kind === 'AUTO_VOID' ||
-                          r.kind === 'BILL_PRINTED'
+                          approver || NO_APPROVAL_KINDS.has(r.kind)
                             ? ''
                             : 'text-amber-400'
                         }
                       >
                         {approver ??
-                          (r.kind === 'PRICE_CORRECTED' ||
-                          r.kind === 'AUTO_VOID' ||
-                          r.kind === 'BILL_PRINTED'
+                          (NO_APPROVAL_KINDS.has(r.kind)
                             ? '—'
                             : t('adminBillEvents.noApproval'))}
                       </Td>

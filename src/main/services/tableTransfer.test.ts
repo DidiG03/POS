@@ -65,6 +65,15 @@ vi.mock('./tableOccupancy', () => ({
   },
 }));
 
+const billEventsRecorded: any[] = [];
+vi.mock('./billEvents', async (importOriginal) => ({
+  ...(await importOriginal<any>()),
+  recordBillEvent: async (e: any) => {
+    billEventsRecorded.push(e);
+    return true;
+  },
+}));
+
 const floorCheck = vi.fn(async (..._a: any[]) => ({ ok: true }) as any);
 vi.mock('./floorTables', () => ({
   checkFloorTable: (...a: any[]) => floorCheck(...a),
@@ -325,6 +334,48 @@ describe('transferTableLocal — on-shift requirement', () => {
     occupancyOpenedAt.mockResolvedValue(new Date('2026-05-12T13:00:00.000Z'));
     occupancyMove.mockResolvedValue(undefined);
     occupancySet.mockResolvedValue(undefined);
+  });
+
+  it('records the hand-over permanently, with who and the unpaid lines', async () => {
+    billEventsRecorded.length = 0;
+    dayShiftFindFirst.mockResolvedValue({ id: 42 });
+    sessionTicket.mockResolvedValue({
+      ...LAST_TICKET,
+      itemsJson: [
+        { name: 'Beer', qty: 2, unitPrice: 3 },
+        { name: 'Water', qty: 1, unitPrice: 1, paid: true },
+      ],
+    });
+    const result = await transferTableLocal({
+      fromArea: 'Sallon',
+      fromLabel: 'T1',
+      toUserId: TARGET.id,
+      actorUserId: ACTOR.id,
+      source: 'phone',
+    });
+    expect(result.ok).toBe(true);
+    expect(billEventsRecorded).toHaveLength(1);
+    expect(billEventsRecorded[0]).toMatchObject({
+      kind: 'TABLE_TRANSFERRED',
+      area: 'Sallon',
+      tableLabel: 'T1',
+      actorUserId: ACTOR.id,
+      amount: 6,
+      source: 'phone',
+      details: { toOwnerId: TARGET.id, movedTable: false },
+    });
+    expect(billEventsRecorded[0].details.lines).toHaveLength(1);
+  });
+
+  it('records nothing when the transfer is refused', async () => {
+    billEventsRecorded.length = 0;
+    await transferTableLocal({
+      fromArea: 'Sallon',
+      fromLabel: 'T1',
+      toUserId: TARGET.id,
+      actorUserId: ACTOR.id,
+    });
+    expect(billEventsRecorded).toEqual([]);
   });
 
   it('rejects ownership transfer when the target waiter is not on shift', async () => {
