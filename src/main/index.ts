@@ -73,6 +73,7 @@ import {
   createDbBackupNow,
   listDbBackups,
   restoreDbBackup,
+  saveBackupTo,
 } from './services/dbBackups';
 import {
   listFiscalReviewsForAdmin,
@@ -152,7 +153,11 @@ import {
   registerUpdateListener,
   cleanup as cleanupUpdater,
 } from './updater';
-import { checkForUpdatesFromMenu, setupAppMenu } from './services/appMenu';
+import {
+  checkForUpdatesFromMenu,
+  setMenuBackupSaver,
+  setupAppMenu,
+} from './services/appMenu';
 import {
   cleanupSenderRateLimits,
   logSecurityEvent,
@@ -1601,6 +1606,8 @@ async function completeVaultAndBoot(): Promise<void> {
 
 app.whenReady().then(async () => {
   if (!isPrimaryInstance) return;
+  // File → Save Backup To… (the till only; the menu is shared).
+  setMenuBackupSaver((folder) => saveBackupTo(folder));
   installOsResumeRecovery();
   configureHostRuntime({
     getMainWindow: () => mainWindow,

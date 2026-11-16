@@ -164,7 +164,24 @@ export async function checkForUpdatesFromMenu(): Promise<void> {
  * File → Save Backup To…: a checked copy of the ledger on a USB stick or
  * a synced folder (`saveBackupTo`). Started by a person, on the till.
  */
+type BackupSaver = (
+  folder: string,
+) => Promise<{ ok: boolean; file?: string; error?: string }>;
+
+/**
+ * Set by the till (`index.ts`). The menu is shared with the Admin app,
+ * which has no ledger: importing the backup code here pulled the till's
+ * database into the Admin build, and the build failed.
+ */
+let backupSaver: BackupSaver | null = null;
+
+export function setMenuBackupSaver(fn: BackupSaver | null): void {
+  backupSaver = fn;
+}
+
 export async function saveBackupFromMenu(): Promise<void> {
+  const save = backupSaver;
+  if (!save) return;
   const win = BrowserWindow.getFocusedWindow() ?? undefined;
   const pick = await (win
     ? dialog.showOpenDialog(win, {
@@ -178,8 +195,7 @@ export async function saveBackupFromMenu(): Promise<void> {
         properties: ['openDirectory', 'createDirectory'],
       }));
   if (pick.canceled || !pick.filePaths[0]) return;
-  const { saveBackupTo } = await import('./dbBackups');
-  const r = await saveBackupTo(pick.filePaths[0]);
+  const r = await save(pick.filePaths[0]);
   const box = r.ok
     ? {
         type: 'info' as const,
@@ -247,11 +263,12 @@ function refreshAppMenu(): void {
     onOpenLogs: () => {
       void openAppLogFolder();
     },
-    onSaveBackup: isAdminShell()
-      ? undefined
-      : () => {
-          void saveBackupFromMenu();
-        },
+    onSaveBackup:
+      isAdminShell() || !backupSaver
+        ? undefined
+        : () => {
+            void saveBackupFromMenu();
+          },
   });
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
