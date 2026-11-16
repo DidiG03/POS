@@ -108,3 +108,52 @@ export function splitsForAmount(
     { method: 'CARD', amount: card.amount },
   ];
 }
+
+/**
+ * How a refund of a cash-and-card sale splits between the two, in the
+ * sale's own proportion: a 40 cash + 60 card sale refunded 10 gives back
+ * 4 cash and 6 card. Cents are exact and add up to `refund`, whose sign
+ * is kept (a corrective files negative amounts). Null when the sale was
+ * not a split.
+ */
+export function refundSplits(
+  splits: unknown,
+  saleTotal: number,
+  refund: number,
+): PaymentSplit[] | null {
+  const parts = saleMethodAmounts('MIXED', saleTotal, splits);
+  const card = parts.find((p) => p.method === 'CARD');
+  // The proportion of the sale as paid. Its total may since have been
+  // restated by an earlier refund; the parts were not.
+  const total = parts.reduce((a, p) => a + cents(p.amount), 0);
+  if (!card || parts.length < 2 || !(total > 0)) return null;
+  const sign = refund < 0 ? -1 : 1;
+  const refundCents = Math.abs(cents(refund));
+  if (!(refundCents > 0)) return null;
+  const cardCents = Math.min(
+    refundCents,
+    Math.round((refundCents * cents(card.amount)) / total),
+  );
+  const cashCents = refundCents - cardCents;
+  const out: PaymentSplit[] = [];
+  if (cashCents > 0)
+    out.push({ method: 'CASH', amount: (sign * cashCents) / 100 });
+  if (cardCents > 0)
+    out.push({ method: 'CARD', amount: (sign * cardCents) / 100 });
+  return out;
+}
+
+/** The cash part of a refund (positive), whatever the sale's method. */
+export function cashPartOfRefund(
+  method: string,
+  splits: unknown,
+  saleTotal: number,
+  refund: number,
+): number {
+  const m = String(method || '').toUpperCase();
+  const amount = Math.abs(cents(refund)) / 100;
+  if (m === 'CASH') return amount;
+  if (m !== 'MIXED') return 0;
+  const parts = refundSplits(splits, saleTotal, amount);
+  return parts?.find((p) => p.method === 'CASH')?.amount ?? 0;
+}

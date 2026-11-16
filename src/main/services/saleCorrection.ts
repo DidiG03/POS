@@ -67,6 +67,7 @@ import type { FiscalDocInfo } from './fiscal/completion';
 import { restockMenuStockForLines } from './menuStock';
 import { logIgnored } from './logIgnored';
 import { billEventLines, recordBillEvent } from './billEvents';
+import { refundSplits } from '@shared/paymentSplits';
 
 export type FiscalSaleRow = {
   orderId: number;
@@ -554,6 +555,9 @@ async function fileCorrective(input: {
   /** The planned change to the sale total (negative). */
   amountDelta: number;
   method: string;
+  /** A cash-and-card sale: its parts and total, to split the refund. */
+  splits?: unknown;
+  saleTotal?: number;
 }): Promise<FiledCancellation> {
   const key = CORRECTIVE_DOC_KEY(input.orderId, input.correctionId);
   const existing = await readDocId(key);
@@ -604,12 +608,25 @@ async function fileCorrective(input: {
     // In lekë, like the invoice it corrects (`invoiceInLek`): a euro venue
     // used to file a corrective's euro amounts as lekë.
     const lek = invoiceInLek(articles, undefined, input.settings);
+    // A cash-and-card sale was filed as two payments; its refund is split
+    // the same way. Filed as one, it went out as OTHER (`MIXED` has no
+    // tax payment type).
+    const split =
+      String(input.method || '').toUpperCase() === 'MIXED'
+        ? refundSplits(input.splits, Number(input.saleTotal || 0), lek.amount)
+        : null;
+    const payment = split
+      ? split.map((p) => ({
+          type: mapPaymentMethod(p.method, input.settings) as any,
+          amount: p.amount,
+        }))
+      : [{ type: method as any, amount: lek.amount }];
     const outcome = await registerCorrectiveInvoice(
       input.settings,
       {
         docId,
         articles: lek.articles,
-        payment: [{ type: method as any, amount: lek.amount }],
+        payment,
         original: {
           iic: input.iic,
           eic: input.eic,
@@ -1468,6 +1485,8 @@ async function applySaleCorrectionNow(
         bandChange,
         amountDelta: plan.amountDelta,
         method: String(payment?.method || 'CASH'),
+        splits: paymentMeta(payment).splits,
+        saleTotal: num((order as any).total),
       });
     }
 
@@ -1497,6 +1516,8 @@ async function applySaleCorrectionNow(
           environment: fiscalConfig(settings).environment,
           amountDelta: plan.amountDelta,
           method: String(payment?.method || 'CASH'),
+          splits: paymentMeta(payment).splits,
+          saleTotal: num((order as any).total),
         }).catch(logIgnored('saleCorrection:1463', undefined));
       }
       needsFiling = await flagFiscalCorrectionRequired({
@@ -1590,6 +1611,9 @@ interface QueuedCorrection {
   environment?: 'dev' | 'prod' | 'local';
   amountDelta: number;
   method: string;
+  /** A cash-and-card sale's parts and total (absent on older entries). */
+  splits?: unknown;
+  saleTotal?: number;
   attempts?: number;
   nextAttemptAt?: string;
   createdAt?: string;
@@ -1675,6 +1699,8 @@ export async function retryQueuedFiscalCorrections(
               bandChange: q.bandChange,
               amountDelta: q.amountDelta,
               method: q.method,
+              splits: q.splits,
+              saleTotal: q.saleTotal,
             });
 
       if (result.state === 'NOT_FILED' && result.retryable) {

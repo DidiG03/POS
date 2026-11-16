@@ -613,6 +613,42 @@ describe('applySaleCorrection — corrective', () => {
   });
 });
 
+describe('applySaleCorrection — cash-and-card sale', () => {
+  it('files the refund as a cash part and a card part, like the sale', async () => {
+    seedSale();
+    db.orders.get(1).payment = {
+      ...db.orders.get(1).payment,
+      method: 'MIXED',
+      metaJson: {
+        splits: [
+          { method: 'CASH', amount: 600 },
+          { method: 'CARD', amount: 900 },
+        ],
+      },
+    };
+    vi.mocked(coreServices.readSettings).mockResolvedValueOnce({
+      defaultVatRate: 0.2,
+      fiscal: { enabled: true, defaultSoldIn: 'XPP' },
+    } as any);
+    registerCorrectiveInvoice.mockResolvedValueOnce({
+      kind: 'complete',
+      docId: 'corr-ok',
+      identifiers: { fic: 'NIVF-CORR' },
+    } as never);
+    await applySaleCorrection({
+      orderId: 1,
+      kind: 'CORRECTIVE',
+      itemIds: [11],
+      reason: 'Coffee charged twice',
+    });
+    const sent = (registerCorrectiveInvoice.mock.calls as any)[0][1];
+    expect(sent.payment).toEqual([
+      { type: 'CASH', amount: -200 },
+      { type: 'CARD', amount: -300 },
+    ]);
+  });
+});
+
 describe('applySaleCorrection — corrective with a service charge', () => {
   function seedServiceCharged(meta?: Record<string, unknown>) {
     seedSale();

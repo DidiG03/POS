@@ -89,6 +89,7 @@ import {
   listZReports,
   reprintZReport,
   type ZReport,
+  correctionCashRefundCents,
 } from './zReport';
 
 /** Issued (not refused as empty). */
@@ -645,5 +646,33 @@ describe('Z report failures and refunds', () => {
     expect(r.report.cash.refunds).toBe(150);
     // 10000 float + 900 cash sales - 150 refunded + 2000 in - 500 out.
     expect(r.report.cash.expected).toBe(12_250);
+  });
+});
+
+describe('correctionCashRefundCents', () => {
+  const order = (method: string, metaJson?: unknown) => ({
+    total: 100,
+    payments: [{ method, metaJson }],
+  });
+  it('counts all of a cash refund and none of a card one', () => {
+    expect(
+      correctionCashRefundCents({ amountDelta: -12, order: order('CASH') }),
+    ).toBe(1200);
+    expect(
+      correctionCashRefundCents({ amountDelta: -12, order: order('CARD') }),
+    ).toBe(0);
+  });
+  it('counts the cash share of a cash-and-card refund', () => {
+    expect(
+      correctionCashRefundCents({
+        amountDelta: -25,
+        order: order('MIXED', {
+          splits: [
+            { method: 'CASH', amount: 40 },
+            { method: 'CARD', amount: 60 },
+          ],
+        }),
+      }),
+    ).toBe(1000);
   });
 });

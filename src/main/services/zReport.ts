@@ -16,7 +16,7 @@
 import { prisma } from '@db/client';
 import { KeyedAsyncMutex } from '@shared/asyncMutex';
 import { roundMoney } from '@shared/money';
-import { saleMethodAmounts } from '@shared/paymentSplits';
+import { cashPartOfRefund, saleMethodAmounts } from '@shared/paymentSplits';
 import { effectiveVatRate } from '@shared/ticketRevenue';
 import { eurExchangeRateFromSettings } from '@shared/paymentDisplay';
 import { isVatEnabledFromSettings } from '@shared/vatFromFiscal';
@@ -163,14 +163,36 @@ export function uniqueDeclarations<
   return out;
 }
 
-/** A correction that handed cash back: the sale it reverses was paid in cash. */
-export function correctionIsCashRefund(c: {
+/**
+ * The cash a correction handed back, in cents: all of it for a cash sale,
+ * the cash share of it for a cash-and-card sale (`refundSplits`), none for
+ * a card sale. A split sale's refund used to count as no cash at all, so
+ * the drawer read over by its cash part.
+ */
+export function correctionCashRefundCents(c: {
   amountDelta: unknown;
-  order?: { payments?: Array<{ method?: string }> } | null;
-}): boolean {
-  if (!(cents(c.amountDelta) < 0)) return false;
-  const method = String(c.order?.payments?.[0]?.method || '').toUpperCase();
-  return method === 'CASH';
+  order?: {
+    total?: unknown;
+    payments?: Array<{ method?: string; metaJson?: unknown }>;
+  } | null;
+}): number {
+  if (!(cents(c.amountDelta) < 0)) return 0;
+  const pay = c.order?.payments?.[0];
+  return cents(
+    cashPartOfRefund(
+      String(pay?.method || ''),
+      (pay?.metaJson as any)?.splits,
+      Number(c.order?.total || 0),
+      Number(c.amountDelta),
+    ),
+  );
+}
+
+/** A correction that handed cash back (any of it). */
+export function correctionIsCashRefund(
+  c: Parameters<typeof correctionCashRefundCents>[0],
+): boolean {
+  return correctionCashRefundCents(c) > 0;
 }
 
 type Stored = { number: number; to: string };
@@ -383,15 +405,27 @@ async function computeZReportFigures(input: {
     select: {
       kind: true,
       amountDelta: true,
-      order: { select: { payments: { select: { method: true } } } },
+      order: {
+        select: {
+          total: true,
+          payments: {
+            select: { method: true, metaJson: true },
+            orderBy: { createdAt: 'asc' },
+            take: 1,
+          },
+        },
+      },
     } as any,
   })) as Array<{
     kind: string;
     amountDelta: unknown;
-    order?: { payments?: Array<{ method?: string }> } | null;
+    order?: {
+      total?: unknown;
+      payments?: Array<{ method?: string; metaJson?: unknown }>;
+    } | null;
   }>;
   const cashRefundCents = corrections.reduce(
-    (a, c) => a + (correctionIsCashRefund(c) ? -cents(c.amountDelta) : 0),
+    (a, c) => a + correctionCashRefundCents(c),
     0,
   );
 
