@@ -152,6 +152,8 @@ export interface SettingsDTO {
   /** Crash reports to the developer; on unless turned off. */
   privacy?: {
     crashReports?: boolean;
+    /** Months a reservation guest's name, phone and note are kept (`guestDataRetention.ts`). */
+    reservationGuestMonths?: number;
   };
   security?: {
     allowLan?: boolean;

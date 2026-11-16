@@ -10,6 +10,7 @@
  */
 import { overdueTablesProblem } from './overdueTables';
 import { idleLockProblem } from '@shared/idleLock';
+import { guestRetentionProblem } from '@shared/guestDataRetention';
 import {
   fiscalEnvironmentOf,
   operatorCodesProblem,
@@ -238,6 +239,10 @@ export function assertSettingsPatch(
       (has(p, 'crashReports') && typeof p.crashReports !== 'boolean')
     ) {
       refuse('Crash reports: the setting must be on or off.');
+    }
+    if (has(p, 'reservationGuestMonths')) {
+      const problem = guestRetentionProblem(p.reservationGuestMonths);
+      if (problem) refuse(problem);
     }
   }
 

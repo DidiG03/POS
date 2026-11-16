@@ -179,4 +179,29 @@ describe('settings', () => {
     expect(stored.restaurantName).toBe('New');
     vi.doUnmock('@db/client');
   });
+
+  it('saves one privacy setting without resetting the other', async () => {
+    vi.resetModules();
+    let stored: any = {
+      privacy: { crashReports: true, reservationGuestMonths: 3 },
+    };
+    vi.doMock('@db/client', () => ({
+      prisma: {
+        syncState: {
+          findUnique: vi.fn(async () => ({ valueJson: stored })),
+          upsert: vi.fn(async (args: any) => {
+            stored = args.update.valueJson;
+            return {};
+          }),
+        },
+      },
+    }));
+    const { coreServices: core } = await import('./core');
+    await core.updateSettings({ privacy: { crashReports: false } });
+    expect(stored.privacy).toEqual({
+      crashReports: false,
+      reservationGuestMonths: 3,
+    });
+    vi.doUnmock('@db/client');
+  });
 });

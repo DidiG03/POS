@@ -277,6 +277,11 @@ export const coreServices = {
     if (input?.security)
       merged.security = { ...(current.security || {}), ...input.security };
     if (input?.host) merged.host = { ...(current.host || {}), ...input.host };
+    // Each privacy setting is saved on its own: replacing the section
+    // turned the guest-data period back to the default with every crash
+    // report switch.
+    if (input?.privacy)
+      merged.privacy = { ...(current.privacy || {}), ...input.privacy };
     if (input?.kds) merged.kds = { ...(current.kds || {}), ...input.kds };
     if (input?.preferences)
       merged.preferences = {

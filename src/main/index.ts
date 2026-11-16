@@ -33,6 +33,10 @@ import {
 initSentry();
 import { resolveHostIntent } from '@shared/tableIntent';
 import { setTableOpenGuarded } from './services/tableClose';
+import {
+  startReservationRetentionLoop,
+  stopReservationRetentionLoop,
+} from './services/reservationRetention';
 import { coreServices, peekCachedSettings } from './services/core';
 import { verifyManagerPin } from './services/managerPin';
 import { checkPaymentApproval } from './services/paymentApproval';
@@ -1571,6 +1575,7 @@ async function startHostDatabaseAndServicesOp(): Promise<void> {
     // PrintJob: SENT/FAILED slips older than a week. After sales-ledger
     // backfill so a PAYMENT receipt without an Order is not deleted.
     startPrintJobRetentionLoop(prisma, { days: 7 });
+    startReservationRetentionLoop();
     // Disk, backup and clock warnings to admins, once a day each.
     startTillHealthChecks();
     // KDS: auto-bump stale tickets after 12 hours.
@@ -1701,6 +1706,7 @@ app.on('before-quit', (event) => {
   stopNotificationRetentionLoop();
   stopSecurityEventRetention();
   stopPrintJobRetentionLoop();
+  stopReservationRetentionLoop();
   stopTillHealthChecks();
   stopKdsAutoBumpLoop();
   stopAutoVoidStaleTicketsLoop();

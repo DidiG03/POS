@@ -23,6 +23,11 @@ import {
 import { Button, IconButton } from '../../components/ui/Button';
 import { Badge } from '../../components/ui/Badge';
 import { Field, Input, Select, Textarea } from '../../components/ui/Field';
+import {
+  GUEST_RETENTION_CHOICES,
+  GUEST_RETENTION_DEFAULT_MONTHS,
+  guestRetentionMonths,
+} from '@shared/guestDataRetention';
 import { ConfirmDialog, Modal } from '../../components/ui/Modal';
 import { EmptyState } from '../../components/ui/Surface';
 import { Segmented } from '../../components/ui/Segmented';
@@ -547,12 +552,34 @@ function TillLogCard() {
   const { t } = useTranslation();
   const [busy, setBusy] = useState(false);
   const [reports, setReports] = useState(true);
+  const [guestMonths, setGuestMonths] = useState<number>(
+    GUEST_RETENTION_DEFAULT_MONTHS,
+  );
   useEffect(() => {
     void window.api.settings
       .get()
-      .then((s: any) => setReports(s?.privacy?.crashReports !== false))
+      .then((s: any) => {
+        setReports(s?.privacy?.crashReports !== false);
+        setGuestMonths(guestRetentionMonths(s));
+      })
       .catch(() => undefined);
   }, []);
+  const saveGuestMonths = async (next: number) => {
+    const before = guestMonths;
+    setGuestMonths(next);
+    try {
+      await window.api.settings.update({
+        privacy: { reservationGuestMonths: next },
+      });
+    } catch (e: unknown) {
+      setGuestMonths(before);
+      toast.error(
+        String(
+          (e as { message?: string })?.message || t('common.actionFailed'),
+        ),
+      );
+    }
+  };
   const setCrashReports = async (next: boolean) => {
     setReports(next);
     try {
@@ -614,6 +641,21 @@ function TillLogCard() {
           onChange={(next) => void setCrashReports(next)}
           label={t('settingsSupport.crashReports')}
         />
+        <Field
+          label={t('settingsSupport.guestMonths')}
+          hint={t('settingsSupport.guestMonthsHelp')}
+        >
+          <Select
+            value={String(guestMonths)}
+            onChange={(e) => void saveGuestMonths(Number(e.target.value))}
+          >
+            {GUEST_RETENTION_CHOICES.map((m) => (
+              <option key={m} value={m}>
+                {t('settingsSupport.months', { count: m })}
+              </option>
+            ))}
+          </Select>
+        </Field>
       </div>
     </SettingsCard>
   );

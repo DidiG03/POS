@@ -711,7 +711,10 @@
     "logSaved": "Till log saved.",
     "logFailed": "Could not get the till's log.",
     "crashReports": "Send crash reports",
-    "crashReportsHelp": "When an app crashes, a report of the error goes to the OneTap developer so it can be fixed. Staff names, guest details, PINs and keys are removed first."
+    "crashReportsHelp": "When an app crashes, a report of the error goes to the OneTap developer so it can be fixed. Staff names, guest details, PINs and keys are removed first.",
+    "guestMonths": "Forget reservation guests after",
+    "guestMonthsHelp": "After this, a reservation's guest name becomes \"Guest\" and the phone number and note are removed. Party size and table stay for reports.",
+    "months": "{{count}} months"
   },
   "settingsBilling": {
     "title": "Billing",
