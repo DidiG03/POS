@@ -76,7 +76,7 @@ export async function listStationPrintJobs(
         createdAt: { gte: new Date(now - PRINT_JOBS_LOOKBACK_MS) },
         printerProfileId: { not: null },
       },
-      orderBy: { createdAt: 'desc' },
+      orderBy: { id: 'desc' },
       take: 100,
     } as any)
     .catch(logIgnored('printJobs:81', []))) as any[];

@@ -3998,7 +3998,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           return send(res, 403, { error: 'forbidden' }, corsOrigin);
         const rows = await prisma.ticketRequest.findMany({
           where: { ownerId, status: 'PENDING' as any },
-          orderBy: { createdAt: 'desc' },
+          orderBy: { id: 'desc' },
         } as any);
         return send(
           res,
@@ -4051,7 +4051,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           return send(res, 403, { error: 'forbidden' }, corsOrigin);
         const rows = await prisma.ticketRequest.findMany({
           where: { ownerId, area, tableLabel, status: 'APPROVED' as any },
-          orderBy: { createdAt: 'asc' },
+          orderBy: { id: 'asc' },
         } as any);
         return send(
           res,
@@ -4405,7 +4405,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
                 const last = await prisma.ticketLog
                   .findFirst({
                     where: { area, tableLabel: label },
-                    orderBy: { createdAt: 'desc' },
+                    orderBy: { id: 'desc' },
                     select: { userId: true },
                   })
                   .catch(() => null);
@@ -4528,7 +4528,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             userId: auth.userId,
             ...(onlyUnread ? { readAt: null } : {}),
           },
-          orderBy: { createdAt: 'desc' },
+          orderBy: { id: 'desc' },
           take: limit,
         } as any);
         return send(
@@ -5297,7 +5297,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             const last = await prisma.ticketLog
               .findFirst({
                 where: { area, tableLabel: label },
-                orderBy: { createdAt: 'desc' },
+                orderBy: { id: 'desc' },
               })
               .catch(() => null);
             return Boolean(

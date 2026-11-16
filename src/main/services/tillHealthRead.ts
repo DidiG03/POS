@@ -20,7 +20,7 @@ export async function readTillHealth(nowMs = Date.now()): Promise<{
 }> {
   const saved = await readBackupSavedElsewhere();
   const firstUser = await prisma.user
-    .findFirst({ orderBy: { createdAt: 'asc' }, select: { createdAt: true } })
+    .findFirst({ orderBy: { id: 'asc' }, select: { createdAt: true } })
     .catch(logIgnored('tillHealth:firstUser', null));
   const freeBytes = freeBytesAt(app.getPath('userData'));
   const warnings = tillHealthWarnings({

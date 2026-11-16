@@ -126,8 +126,8 @@ function iso(raw: unknown): string | null {
 
 const FISCAL_SALE_INCLUDE = {
   items: { orderBy: { sortOrder: 'asc' as const } },
-  payments: { orderBy: { createdAt: 'desc' as const }, take: 1 },
-  corrections: { orderBy: { createdAt: 'desc' as const } },
+  payments: { orderBy: { id: 'desc' as const }, take: 1 },
+  corrections: { orderBy: { id: 'desc' as const } },
 };
 
 function paymentMeta(payment: any): Record<string, unknown> {
@@ -403,7 +403,7 @@ export async function printCorrectionSlip(
     if (!correction) return false;
     const order: any = await prisma.order.findUnique({
       where: { id: Number(correction.orderId) },
-      include: { payments: { orderBy: { createdAt: 'desc' }, take: 1 } },
+      include: { payments: { orderBy: { id: 'desc' }, take: 1 } },
     } as any);
     const payment = Array.isArray(order?.payments) ? order.payments[0] : null;
     const struck = Array.isArray(correction.itemsJson)
@@ -1131,7 +1131,7 @@ async function applySaleCorrectionNow(
       where: { id: orderId },
       include: {
         items: { orderBy: { sortOrder: 'asc' } },
-        payments: { orderBy: { createdAt: 'desc' }, take: 1 },
+        payments: { orderBy: { id: 'desc' }, take: 1 },
         corrections: {
           select: {
             id: true,

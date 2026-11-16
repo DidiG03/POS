@@ -287,8 +287,8 @@ async function loadTicketLogs(input?: {
 
 const PAID_ORDER_INCLUDE = {
   items: { orderBy: { sortOrder: 'asc' as const } },
-  payments: { orderBy: { createdAt: 'desc' as const }, take: 1 },
-  corrections: { orderBy: { createdAt: 'desc' as const } },
+  payments: { orderBy: { id: 'desc' as const }, take: 1 },
+  corrections: { orderBy: { id: 'desc' as const } },
 };
 
 async function loadPaidOrders(input?: {

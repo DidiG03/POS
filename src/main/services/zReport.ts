@@ -410,7 +410,7 @@ async function computeZReportFigures(input: {
           total: true,
           payments: {
             select: { method: true, metaJson: true },
-            orderBy: { createdAt: 'asc' },
+            orderBy: { id: 'asc' },
             take: 1,
           },
         },

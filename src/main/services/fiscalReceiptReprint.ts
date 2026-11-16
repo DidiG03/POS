@@ -27,7 +27,7 @@ export async function printFiscalReceiptForSale(
   const order: any = await prisma.order
     .findUnique({
       where: { id: Number(orderId) },
-      include: { payments: { orderBy: { createdAt: 'desc' }, take: 1 } },
+      include: { payments: { orderBy: { id: 'desc' }, take: 1 } },
     } as any)
     .catch(() => null);
   if (!order) return { ok: false, error: 'not-found' };

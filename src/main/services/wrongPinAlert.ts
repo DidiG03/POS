@@ -54,7 +54,7 @@ async function bumpAlert(input: {
         createdAt: { gte: since } as any,
         message: { startsWith: input.prefix } as any,
       } as any,
-      orderBy: { createdAt: 'desc' },
+      orderBy: { id: 'desc' },
     } as any)
     .catch(() => null)) as { id: number; message: string } | null;
   if (existing) {

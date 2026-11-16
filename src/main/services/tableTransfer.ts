@@ -538,7 +538,7 @@ async function transferTableUnderLock(
           id: { not: createdLog.id },
           ...(fromAtDate ? { createdAt: { gte: fromAtDate } } : {}),
         },
-        orderBy: { createdAt: 'asc' },
+        orderBy: { id: 'asc' },
         select: { id: true, note: true } as any,
       });
       for (const r of sessionRows as { id: number; note: string | null }[]) {

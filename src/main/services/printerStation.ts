@@ -260,7 +260,7 @@ async function tick(): Promise<{ idle: boolean }> {
       await prisma.printJob
         .findMany({
           where: { status: 'QUEUED' as any },
-          orderBy: { createdAt: 'asc' },
+          orderBy: { id: 'asc' },
           take: 20,
         })
         .catch(() => [])

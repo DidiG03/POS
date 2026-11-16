@@ -2368,7 +2368,7 @@ async function clockOutLocal(
         const last = await prisma.ticketLog
           .findFirst({
             where: { area, tableLabel: label },
-            orderBy: { createdAt: 'desc' },
+            orderBy: { id: 'desc' },
             select: { userId: true },
           })
           .catch(() => null);
@@ -3529,7 +3529,7 @@ ipcHandle('admin:getOverview', async (_e) => {
       .findMany({
         where: { createdAt: { gte: todayStart, lte: todayEnd } },
         select: { area: true, label: true, covers: true, createdAt: true },
-        orderBy: { createdAt: 'desc' },
+        orderBy: { id: 'desc' },
       })
       .catch(
         () =>
@@ -4797,7 +4797,7 @@ ipcHandle('notifications:list', async (_e, input, ctx) => {
   const limit = Math.min(500, Math.max(1, Number(input?.limit || 100)));
   const rows = await prisma.notification.findMany({
     where: { userId, ...(onlyUnread ? { readAt: null } : {}) },
-    orderBy: { createdAt: 'desc' },
+    orderBy: { id: 'desc' },
     take: limit,
   } as any);
   return rows.map((n: any) => ({
@@ -4893,7 +4893,7 @@ ipcHandle('admin:listNotifications', async (_e, input) => {
 
   const rows = await prisma.notification.findMany({
     where: { userId, ...(onlyUnread ? { readAt: null } : {}) },
-    orderBy: { createdAt: 'desc' },
+    orderBy: { id: 'desc' },
     take: limit,
     include: { user: true },
   } as any);
@@ -4997,7 +4997,7 @@ ipcHandle('reports:getMyOverview', async (_e, input, ctx) => {
       const last = await prisma.ticketLog
         .findFirst({
           where: { area, tableLabel: label },
-          orderBy: { createdAt: 'desc' },
+          orderBy: { id: 'desc' },
         })
         .catch(() => null);
       return Boolean(last && Number(last.userId) === Number(userId));
@@ -5177,7 +5177,7 @@ ipcHandle('requests:listForOwner', async (_e, input, ctx) => {
   if (!ownerId) return [];
   const rows = await prisma.ticketRequest.findMany({
     where: { ownerId, status: 'PENDING' as any },
-    orderBy: { createdAt: 'desc' },
+    orderBy: { id: 'desc' },
   } as any);
   return rows.map((r: any) => ({
     id: r.id,
@@ -5217,7 +5217,7 @@ ipcHandle('requests:pollApprovedForTable', async (_e, input, ctx) => {
   if (!ownerId || !area || !tableLabel) return [];
   const rows = await prisma.ticketRequest.findMany({
     where: { ownerId, area, tableLabel, status: 'APPROVED' as any },
-    orderBy: { createdAt: 'asc' },
+    orderBy: { id: 'asc' },
   } as any);
   return rows.map((r: any) => ({ id: r.id, items: r.itemsJson, note: r.note }));
 });

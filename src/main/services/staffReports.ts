@@ -37,7 +37,7 @@ export async function listMyActiveTickets(userId: number): Promise<any[]> {
       const last = await prisma.ticketLog
         .findFirst({
           where: ownerWhere,
-          orderBy: { createdAt: 'desc' },
+          orderBy: { id: 'desc' },
         })
         .catch(() => null);
       if (!last || Number(last.userId) !== Number(userId)) return null;
@@ -45,7 +45,7 @@ export async function listMyActiveTickets(userId: number): Promise<any[]> {
       if (since) where.createdAt = { gte: since };
       const [rows, coversRow, u] = await Promise.all([
         prisma.ticketLog
-          .findMany({ where, orderBy: { createdAt: 'asc' }, take: 500 })
+          .findMany({ where, orderBy: { id: 'asc' }, take: 500 })
           .catch(() => [] as any[]),
         prisma.covers
           .findFirst({
@@ -128,7 +128,7 @@ export async function listMyPaidTickets(
       take: Math.min(1000, Math.max(take * 3, 100)),
       include: {
         items: { orderBy: { sortOrder: 'asc' } },
-        payments: { orderBy: { createdAt: 'asc' }, take: 1 },
+        payments: { orderBy: { id: 'asc' }, take: 1 },
         user: { select: { displayName: true } },
       },
     })
@@ -272,7 +272,7 @@ export async function listMyVoidedTickets(
     prisma.ticketLog
       .findMany({
         where: { userId },
-        orderBy: { createdAt: 'desc' },
+        orderBy: { id: 'desc' },
         take,
       })
       .catch((e: unknown) => {

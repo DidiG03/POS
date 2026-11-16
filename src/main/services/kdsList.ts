@@ -55,7 +55,7 @@ async function getSessionOwnerId(
         tableLabel,
         createdAt: { gte: sessionStart },
       },
-      orderBy: { createdAt: 'desc' },
+      orderBy: { id: 'desc' },
       select: { userId: true },
     })
     .catch(() => null);
@@ -91,7 +91,7 @@ async function voidedClosedOrderIds(rows: any[]): Promise<Set<number>> {
             tableLabel: String(o.tableLabel || ''),
             createdAt: { gte: openedAt, lte: closedAt },
           },
-          orderBy: { createdAt: 'desc' },
+          orderBy: { id: 'desc' },
           select: { itemsJson: true, note: true },
         })
         .catch(() => null);

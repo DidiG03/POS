@@ -75,7 +75,7 @@ export async function markRepeatedKitchenSlip(payload: any): Promise<void> {
         createdAt: { gte: new Date(Date.now() - sittingLookbackMs()) },
         printerProfileId: null,
       },
-      orderBy: { createdAt: 'desc' },
+      orderBy: { id: 'desc' },
       take: 200,
       select: { createdAt: true, payloadJson: true },
     } as any)
