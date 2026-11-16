@@ -13,6 +13,7 @@ import {
 } from '@shared/ticketLogItems';
 import { asPositiveId } from './ticketLogLatest';
 import { coreServices } from './core';
+import { sittingLookbackMs } from './sittingLimit';
 import { mapOrderToFiscalSaleRow } from './saleCorrection';
 import { isTransferredOutNote, parseTransferTag } from './tableTransfer';
 import { keepCanonicalPaidOrders } from '@shared/paidSaleDedupe';
@@ -358,7 +359,6 @@ type StaffSale = {
  * table open across midnight is paid "today" but was served "yesterday".
  * Auto-void closes any table after 12 hours.
  */
-export const SITTING_LOOKBACK_MS = 12 * 60 * 60 * 1000;
 
 async function staffLedger(
   input: { startIso?: string; endIso?: string } | undefined,
@@ -368,7 +368,7 @@ async function staffLedger(
   const lookbackIso =
     startMs == null
       ? undefined
-      : new Date(startMs - SITTING_LOOKBACK_MS).toISOString();
+      : new Date(startMs - sittingLookbackMs()).toISOString();
   const logs = await loadTicketLogs({
     startIso: lookbackIso,
     endIso: input?.endIso,

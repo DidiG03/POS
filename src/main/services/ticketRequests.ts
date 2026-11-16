@@ -14,6 +14,7 @@
  */
 import { prisma } from '@db/client';
 import { KeyedAsyncMutex } from '@shared/asyncMutex';
+import { MIN_SITTING_LOOKBACK_MS, sittingLookbackMs } from './sittingLimit';
 
 export type TicketRequestDecision = 'APPROVED' | 'REJECTED';
 
@@ -58,7 +59,7 @@ export async function decideTicketRequest(input: {
 }
 
 /** How far back a waiter's requests for a table are remembered (a sitting). */
-export const REQUEST_LINE_MEMORY_MS = 13 * 60 * 60 * 1000;
+export const REQUEST_LINE_MEMORY_MS = MIN_SITTING_LOOKBACK_MS;
 
 /** The phone's id for a requested line (`requestLineId`), or ''. */
 export function requestLineIdOf(item: unknown): string {
@@ -94,7 +95,7 @@ export async function listRequesterTicketRequests(input: {
         requesterId,
         area: String(input.area),
         tableLabel: String(input.tableLabel),
-        createdAt: { gte: new Date(now - REQUEST_LINE_MEMORY_MS) },
+        createdAt: { gte: new Date(now - sittingLookbackMs()) },
       },
       orderBy: { id: 'desc' },
       take: 50,

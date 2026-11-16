@@ -1,5 +1,6 @@
 import { prisma } from '@db/client';
 import { KeyedAsyncMutex } from '@shared/asyncMutex';
+import { noteSittingSettings } from './sittingLimit';
 import {
   countOccupiedTables,
   isTableOccupied,
@@ -225,6 +226,7 @@ export const coreServices = {
     inflight = loadSettingsFromDb()
       .then((m) => {
         cached = m;
+        noteSittingSettings(m);
         return m;
       })
       .finally(() => {
@@ -350,6 +352,7 @@ export const coreServices = {
     // Refresh the cache atomically — every reader after this returns
     // the just-saved doc without an extra DB round-trip.
     cached = merged;
+    noteSittingSettings(merged);
     return merged;
   },
 

@@ -369,7 +369,7 @@ describe('recordMenuPriceChange', () => {
     await recordMenuPriceChange(
       ESPRESSO,
       { price: 110 },
-      new Date(NOW.getTime() - 3 * 24 * 60 * 60_000),
+      new Date(NOW.getTime() - 4 * 24 * 60 * 60_000),
     );
     await recordMenuPriceChange(
       { ...ESPRESSO, price: 110 },

@@ -11,11 +11,18 @@
  */
 
 import { prisma } from '@db/client';
+import { OVERDUE_TABLES_MAX_HOURS } from './overdueTables';
 
 export const MENU_PRICE_HISTORY_KEY = 'menu:priceHistory';
 
-/** Longer than any sitting can last (open tables are voided after 12h). */
-export const MENU_PRICE_HISTORY_KEEP_MS = 48 * 60 * 60 * 1000;
+/**
+ * Longer than any sitting can last: a venue can keep tables open up to
+ * `OVERDUE_TABLES_MAX_HOURS`. It was 48 hours, from when tables were
+ * voided after 12, so a price changed early in a longer sitting read as
+ * tampering at payment.
+ */
+export const MENU_PRICE_HISTORY_KEEP_MS =
+  (OVERDUE_TABLES_MAX_HOURS + 2) * 60 * 60 * 1000;
 
 const MAX_ENTRIES = 2000;
 

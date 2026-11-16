@@ -13,9 +13,9 @@
  * the same table within {@link KEYLESS_REPEAT_WINDOW_MS}.
  */
 import { prisma } from '@db/client';
+import { sittingLookbackMs } from './sittingLimit';
 
 export const KEYLESS_REPEAT_WINDOW_MS = 10 * 60_000;
-const LOOKBACK_MS = 13 * 60 * 60_000;
 
 /** Lines of a slip, order-independent. */
 export function slipFingerprint(items: unknown): string {
@@ -72,7 +72,7 @@ export async function markRepeatedKitchenSlip(payload: any): Promise<void> {
   const rows = (await prisma.printJob
     .findMany({
       where: {
-        createdAt: { gte: new Date(Date.now() - LOOKBACK_MS) },
+        createdAt: { gte: new Date(Date.now() - sittingLookbackMs()) },
         printerProfileId: null,
       },
       orderBy: { createdAt: 'desc' },

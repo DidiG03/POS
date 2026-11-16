@@ -27,7 +27,8 @@ import {
   TRANSFERRED_OUT_TAG_PREFIX,
 } from './tableTransfer';
 import { adapterDateTimeText } from '@db/datetimeText';
-import { matchOrdersToTicketRows, SITTING_LOOKBACK_MS } from './adminTickets';
+import { matchOrdersToTicketRows } from './adminTickets';
+import { sittingLookbackMs } from './sittingLimit';
 
 export type PaidSaleLine = {
   name: string;
@@ -847,7 +848,7 @@ type SittingLedger = {
  */
 async function loadSittingLedger(from: Date, to: Date): Promise<SittingLedger> {
   // A table served before midnight is paid after it: look back for its sitting.
-  const lookback = new Date(from.getTime() - SITTING_LOOKBACK_MS);
+  const lookback = new Date(from.getTime() - sittingLookbackMs());
   const range = createdAtRangeSql(lookback, to);
   const notMoved = `instr(coalesce(t."note", ''), ?) = 0`;
   const keyed: any[] = await prisma.$queryRawUnsafe(

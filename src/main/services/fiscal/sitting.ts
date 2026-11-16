@@ -31,6 +31,8 @@ import { prisma } from '@db/client';
 import { getTableSessionStartedAt } from '../tableSession';
 import { notifyAdminsAndActor } from '../adminAlerts';
 import { readLedgerErasedAt } from '../ledgerErase';
+// A sitting with no recorded start is looked back over as far as one can last.
+import { sittingLookbackMs } from '../sittingLimit';
 import { docIdFromKey } from './docId';
 import {
   annotateFiscalClaimUnlocked,
@@ -47,9 +49,6 @@ import {
   withFiscalClaimLock,
   type FiscalClaimRecord,
 } from './claims';
-
-/** A sitting with no recorded start is looked back over this far. */
-const FALLBACK_LOOKBACK_MS = 12 * 60 * 60 * 1000;
 
 /**
  * How long after filing an invoice may legitimately have no saved sale:
@@ -300,7 +299,7 @@ export async function checkSittingBeforePayment(input: {
   const erasedAt = await readLedgerErasedAt(prisma as any).catch(() => null);
   let sinceMs = sessionStart
     ? sessionStart.getTime()
-    : now - FALLBACK_LOOKBACK_MS;
+    : now - sittingLookbackMs();
   if (erasedAt && erasedAt.getTime() > sinceMs) sinceMs = erasedAt.getTime();
 
   const currentDocId = input.idempotencyKey
