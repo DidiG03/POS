@@ -1,6 +1,7 @@
 import { coreServices, withTableLock } from './core';
 import { applyTableOpenState } from './tableOpen';
 import { recordPaidLinesOnBill } from './paidLines';
+import { getOpenedAt } from './tableOccupancy';
 
 export const TABLE_ALREADY_PAID = 'TABLE_ALREADY_PAID';
 
@@ -182,4 +183,64 @@ export function paymentPrintAccepted(
         }
       : {}),
   };
+}
+
+export const PAYMENT_KEY_REUSED = 'PAYMENT_KEY_REUSED';
+
+type StoredJob = {
+  createdAt?: unknown;
+  payloadJson?: unknown;
+};
+
+/**
+ * Answer a request whose idempotency key the till has already recorded.
+ *
+ * The answer used to close the table named in the new request, taking the
+ * kind and close flag from it too, so any key a phone had used before (a
+ * payment, even a kitchen slip) freed any table with its items unpaid.
+ * Now only what is stored under the key counts:
+ *   - a request naming another table is refused, and nothing is done;
+ *   - the stored job's table is closed only when the stored job is a
+ *     payment that closed it, and only when the table's current sitting
+ *     began before that payment: a late retry must not close the next
+ *     party's table.
+ */
+export async function answerRecordedRequest(
+  existing: StoredJob,
+  requested: { area?: unknown; tableLabel?: unknown },
+  opts?: { lockHeld?: boolean },
+): Promise<PrintTicketOk | PrintTicketErr> {
+  const payload = (existing?.payloadJson || {}) as {
+    area?: unknown;
+    tableLabel?: unknown;
+    meta?: unknown;
+  };
+  const area = String(payload.area ?? '').trim();
+  const label = String(payload.tableLabel ?? '').trim();
+  const askedArea = String(requested.area ?? '').trim();
+  const askedLabel = String(requested.tableLabel ?? '').trim();
+  if (
+    (askedArea && askedArea !== area) ||
+    (askedLabel && askedLabel !== label)
+  ) {
+    return {
+      ok: false,
+      code: PAYMENT_KEY_REUSED,
+      error:
+        'This request was already used for another table. Nothing was done; refresh the table and try again.',
+      permanent: true,
+    };
+  }
+  const meta = payload.meta as { kind?: unknown } | undefined;
+  const kind = String(meta?.kind || '');
+  const closes = paymentShouldCloseTable(meta);
+  if (closes && area && label) {
+    const openedAt = await getOpenedAt(area, label).catch(() => null);
+    const paidAt = new Date(existing?.createdAt as any).getTime();
+    if (openedAt && Number.isFinite(paidAt) && openedAt.getTime() > paidAt) {
+      // A new party sat down after this payment: leave their table alone.
+      return paymentPrintAccepted(true, false);
+    }
+  }
+  return closeTableAfterIdempotentPayment(area, label, kind, closes, opts);
 }

@@ -70,7 +70,7 @@ describe('checkBillSlip', () => {
   });
 
   it('leaves kitchen slips and payments to their own checks', async () => {
-    for (const kind of ['ORDER', 'PAYMENT', 'RECEIPT']) {
+    for (const kind of ['ORDER', 'PAYMENT']) {
       expect(
         await checkBillSlip({
           area: 'A',
@@ -80,6 +80,20 @@ describe('checkBillSlip', () => {
         }),
       ).toEqual({ kind: 'not-bill' });
     }
+  });
+
+  it('builds an open-table RECEIPT from the bill, like any bill', async () => {
+    sitting.current = {
+      id: 1,
+      itemsJson: [{ name: 'Beer', qty: 2, unitPrice: 3 }],
+    } as any;
+    const r = await checkBillSlip({
+      area: 'A',
+      tableLabel: '1',
+      meta: { kind: 'RECEIPT' },
+      items: [{ name: 'Lobster', qty: 1, unitPrice: 0.01 }],
+    });
+    expect(r).toMatchObject({ kind: 'print', amount: 6 });
   });
 
   it('refuses a bill for a table with nothing on it', async () => {

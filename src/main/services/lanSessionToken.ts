@@ -103,7 +103,7 @@ export function issueLanSessionToken(
  */
 export function issueManagerApprovalToken(
   secret: string,
-  ctx: { userId: number; role?: string },
+  ctx: { userId: number; role?: string; approves?: unknown },
   ttlSeconds = 5 * 60,
   nowMs = Date.now(),
 ): string {
@@ -112,6 +112,8 @@ export function issueManagerApprovalToken(
     sub: ctx.userId,
     role: ctx.role,
     purpose: 'manager_approval',
+    // What the manager approved, when the screen said (`approvalPurpose.ts`).
+    ...(ctx.approves ? { approves: ctx.approves } : {}),
     // Two approvals in the same second must still be two tokens: each
     // covers one action (see `approvalUse.ts`).
     nonce: base64url(crypto.randomBytes(9)),

@@ -10,6 +10,7 @@
  * it is ready (`noticeLateFiscalReceipt`).
  */
 import { prisma } from '@db/client';
+import { storedReceiptForSale } from './receiptReprint';
 import { coreServices } from './core';
 import { notifyAdminsAndActor } from './adminAlerts';
 
@@ -24,49 +25,18 @@ function text(v: unknown): string {
 export async function printFiscalReceiptForSale(
   orderId: number,
 ): Promise<FiscalReceiptReprintResult> {
-  const order: any = await prisma.order
-    .findUnique({
-      where: { id: Number(orderId) },
-      include: { payments: { orderBy: { id: 'desc' }, take: 1 } },
-    } as any)
-    .catch(() => null);
-  if (!order) return { ok: false, error: 'not-found' };
-  const payment = Array.isArray(order.payments) ? order.payments[0] : null;
-  const key = text(payment?.idempotencyKey);
-  if (!key) return { ok: false, error: 'no-receipt' };
-  const job: any = await prisma.printJob
-    .findUnique({ where: { idempotencyKey: key } } as any)
-    .catch(() => null);
-  const payload = job?.payloadJson;
-  if (!payload || typeof payload !== 'object') {
-    return { ok: false, error: 'no-receipt' };
+  const stored = await storedReceiptForSale(orderId);
+  if (!stored.ok) return { ok: false, error: stored.error };
+  if (!String(stored.meta.fiscalNivf ?? '').trim()) {
+    return { ok: false, error: 'not-fiscalized' };
   }
-  const paymentMeta =
-    payment?.metaJson && typeof payment.metaJson === 'object'
-      ? payment.metaJson
-      : {};
-  const meta: Record<string, unknown> = { ...(payload.meta || {}) };
-  // The payment row is stamped too; fill anything the receipt lacks.
-  const fill = (k: string, v: unknown) => {
-    if (!text(meta[k]) && text(v)) meta[k] = text(v);
-  };
-  fill('fiscalNivf', payment?.fiscalNivf);
-  fill('fiscalNslf', payment?.fiscalNslf);
-  fill('fiscalEic', payment?.fiscalEic);
-  fill('fiscalLink', paymentMeta.fiscalLink);
-  fill('fiscalQrCode', paymentMeta.fiscalQrCode);
-  fill('fiscalTin', paymentMeta.fiscalTin);
-  if (!text(meta.fiscalNivf)) return { ok: false, error: 'not-fiscalized' };
-  meta.fiscalEnabled = true;
-  meta.fiscalStatus = 'accepted';
-  delete meta.fiscalWarning;
-  // A reprint: never a sale, never fiscalized again.
-  meta.reprint = true;
   const settings: any = await coreServices.readSettings();
   const { dispatchTicket } = await import('./printDispatcher');
-  const result = await dispatchTicket({ ...payload, meta } as any, settings, {
-    persistRetryOnTransientFailure: false,
-  }).catch(() => ({ ok: false }) as { ok: boolean });
+  const result = await dispatchTicket(
+    { ...stored.payload, meta: stored.meta } as any,
+    settings,
+    { persistRetryOnTransientFailure: false },
+  ).catch(() => ({ ok: false }) as { ok: boolean });
   return { ok: true, printed: Boolean(result?.ok) };
 }
 

@@ -97,7 +97,9 @@ export async function checkBillSlip(input: {
       error: `The till does not print "${kind}" slips.`,
     };
   }
-  if (kind !== 'TICKET') return { kind: 'not-bill' };
+  // `RECEIPT` is what the Reports and floor screens print for an open
+  // table: a bill too. It used to print whatever the device sent.
+  if (kind !== 'TICKET' && kind !== 'RECEIPT') return { kind: 'not-bill' };
   const sitting = await findLatestTicketLogForCurrentSession(
     input.area,
     input.tableLabel,

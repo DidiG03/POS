@@ -196,6 +196,13 @@ export function buildReportPrintPayload(
       // When the original payment was fiskalizuar, carry NSLF/NIVF/QR so
       // the reprint still prints as a registered fiscal receipt.
       reprint: isPaid ? true : undefined,
+      // The sale to reprint: the till prints its stored receipt of it and
+      // ignores the rest of this payload (`receiptReprint.ts`).
+      reprintOf: isPaid
+        ? Number(
+            ticket.orderId ?? (ticket.sale as { orderId?: unknown })?.orderId,
+          ) || undefined
+        : undefined,
       closeTable: isPaid ? false : undefined,
       userId: opts.userId ?? null,
       vatEnabled,

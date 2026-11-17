@@ -11,8 +11,8 @@ const api: Api = {
       managerPin: string;
       enabled?: boolean;
     }) => ipcRenderer.invoke('auth:manageUserFiscal', input),
-    verifyManagerPin: (pin: string) =>
-      ipcRenderer.invoke('auth:verifyManagerPin', { pin }),
+    verifyManagerPin: (pin: string, approves?: unknown) =>
+      ipcRenderer.invoke('auth:verifyManagerPin', { pin, approves }),
     logoutAdmin: () => ipcRenderer.invoke('auth:logoutAdmin'),
     resumeSession: (token: string) =>
       ipcRenderer.invoke('auth:resumeSession', { token }),

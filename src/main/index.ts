@@ -34,6 +34,15 @@ initSentry();
 import { resolveHostIntent } from '@shared/tableIntent';
 import { setTableOpenGuarded } from './services/tableClose';
 import {
+  parsePaymentApprovalPurpose,
+  paymentApprovalFingerprint,
+  purposeAllowsPayment,
+} from '@shared/approvalPurpose';
+import {
+  resolveDeviceReprint,
+  stripClientFiscalMeta,
+} from './services/receiptReprint';
+import {
   startReservationRetentionLoop,
   stopReservationRetentionLoop,
 } from './services/reservationRetention';
@@ -288,7 +297,7 @@ import {
 } from './services/eraseTickets';
 import {
   settleTableAfterPayment,
-  closeTableAfterIdempotentPayment,
+  answerRecordedRequest,
   paymentPrintAccepted,
   paymentShouldCloseTable,
   isPaymentReprint,
@@ -1962,7 +1971,12 @@ ipcHandle('auth:verifyManagerPin', async (_e, payload) => {
     ok: true,
     userId: result.admin.id,
     userName: result.admin.displayName,
-    approvalToken: issueApprovalToken(result.admin.id, 'ADMIN'),
+    approvalToken: issueApprovalToken(
+      result.admin.id,
+      'ADMIN',
+      Date.now(),
+      parsePaymentApprovalPurpose((payload as any)?.approves),
+    ),
   };
 });
 
@@ -2843,26 +2857,59 @@ ipcHandle('tickets:print', async (_e, input, ctx) => {
       // duplicate notifications, audit PrintJobs, or dispatch again.
       // Still free the table if the first attempt died after the PrintJob.
       await ensureSettledSaleFromPrintJob(existing as any).catch(() => null);
-      return closeTableAfterIdempotentPayment(
-        String(input?.area || ''),
-        String(input?.tableLabel || ''),
-        String(
-          (input as any)?.meta?.kind ||
-            (existing as any)?.payloadJson?.meta?.kind ||
-            '',
-        ),
-        paymentShouldCloseTable(
-          (existing as any)?.payloadJson?.meta ?? (input as any)?.meta,
-        ),
-      );
+      // Only what is stored under this key counts (`paymentSettle.ts`).
+      const answer = await answerRecordedRequest(existing as any, {
+        area: input?.area,
+        tableLabel: input?.tableLabel,
+      });
+      if (!answer.ok) {
+        logSecurityEvent('payment_key_reused', {
+          userId: ctx?.session?.userId ?? null,
+          area: String(input?.area || ''),
+          tableLabel: String(input?.tableLabel || ''),
+        });
+      }
+      return answer;
     }
   }
 
-  const area = String(input?.area || '');
-  const tableLabel = String(input?.tableLabel || '');
+  let area = String(input?.area || '');
+  let tableLabel = String(input?.tableLabel || '');
   let items = (input?.items as any[]) || [];
   const recordOnly = Boolean((input as any)?.recordOnly);
   if (!area || !tableLabel || items.length === 0) return false;
+  // A reprint prints the till's stored receipt of the sale it names; tax
+  // codes in any other request are dropped (`receiptReprint.ts`).
+  {
+    const reprint = await resolveDeviceReprint({ meta: (input as any)?.meta });
+    if (reprint.kind === 'refuse') {
+      return {
+        ok: false,
+        code: reprint.code,
+        error: reprint.error,
+        permanent: true,
+      } as any;
+    }
+    if (reprint.kind === 'print') {
+      area = String(reprint.payload.area || area);
+      tableLabel = String(reprint.payload.tableLabel || tableLabel);
+      items = reprint.payload.items || [];
+      input = {
+        ...(input as any),
+        area,
+        tableLabel,
+        items,
+        covers: reprint.payload.covers ?? null,
+        note: reprint.payload.note ?? null,
+        meta: reprint.payload.meta,
+      };
+    } else {
+      input = {
+        ...(input as any),
+        meta: stripClientFiscalMeta((input as any)?.meta),
+      };
+    }
+  }
   // A kitchen slip prints what its Send put on the bill, or nothing
   // (`orderSlip.ts`).
   {
@@ -3001,14 +3048,34 @@ ipcHandle('tickets:print', async (_e, input, ctx) => {
         meta,
         actorIsAdmin: ctx?.session?.role === 'ADMIN',
         // One approval, one payment (see `approvalUse.ts`).
-        approvalIsValid: async (token, adminId) =>
-          claimApprovalFor(
+        // Bound to what the manager approved, and to this payment's
+        // adjustments and bill (`approvalPurpose.ts`).
+        approvalIsValid: async (token, adminId) => {
+          const grant = verifyApprovalToken(token);
+          if (
+            grant?.purpose &&
+            !purposeAllowsPayment(grant.purpose, {
+              settings,
+              area,
+              tableLabel,
+              meta: payload.meta,
+            })
+          ) {
+            return false;
+          }
+          return claimApprovalFor(
             token,
             adminId,
-            approvalScope('PAYMENT', area, tableLabel),
+            approvalScope(
+              'PAYMENT',
+              area,
+              tableLabel,
+              paymentApprovalFingerprint(settings, payload.meta),
+            ),
             idempotencyKey,
             { anyKeyInScope: true },
-          ),
+          );
+        },
       });
       if (approvalRefused) return approvalRefused;
       if (meta) delete meta.managerApprovalToken;

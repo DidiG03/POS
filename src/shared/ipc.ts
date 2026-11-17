@@ -614,7 +614,14 @@ export interface ApiAuth {
     managerPin: string;
     enabled?: boolean;
   }): Promise<UserFiscalResult>;
-  verifyManagerPin(pin: string): Promise<{
+  /**
+   * `approves`: what the manager is approving (`approvalPurpose.ts`); the
+   * approval then covers only that.
+   */
+  verifyManagerPin(
+    pin: string,
+    approves?: import('./approvalPurpose').PaymentApprovalPurpose,
+  ): Promise<{
     ok: boolean;
     userId?: number;
     userName?: string;

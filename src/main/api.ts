@@ -140,7 +140,7 @@ import {
 } from '@shared/floorLayoutCheck';
 import {
   settleTableAfterPayment,
-  closeTableAfterIdempotentPayment,
+  answerRecordedRequest,
   isPaymentReprint,
   paymentPrintAccepted,
   paymentShouldCloseTable,
@@ -275,6 +275,16 @@ import {
 import { planTicketVoid } from '@shared/voidPaid';
 import { applySaleCorrection } from './services/saleCorrection';
 import { setTableOpenGuarded } from './services/tableClose';
+import {
+  parsePaymentApprovalPurpose,
+  paymentApprovalFingerprint,
+  purposeAllowsPayment,
+  type PaymentApprovalPurpose,
+} from '@shared/approvalPurpose';
+import {
+  resolveDeviceReprint,
+  stripClientFiscalMeta,
+} from './services/receiptReprint';
 import {
   gzipBodyIfAccepted,
   gzipHtmlIfAccepted,
@@ -810,13 +820,15 @@ const issueToken = async (
 ) => issueLanSessionToken(secret, ctx, ttlSeconds);
 const issueApprovalToken = async (
   secret: string,
-  ctx: { userId: number; role?: string },
+  ctx: { userId: number; role?: string; approves?: unknown },
   ttlSeconds?: number,
 ) => issueManagerApprovalToken(secret, ctx, ttlSeconds);
 
 type ApprovalContext = {
   userId: number;
   role?: string;
+  /** What the manager approved, when the screen said. */
+  approves: PaymentApprovalPurpose | null;
   /** Signature part: unique per token, the key its one use is claimed on. */
   tokenId: string;
   expiresAtMs: number;
@@ -850,6 +862,7 @@ async function verifyApprovalToken(
   return {
     userId: payload.sub,
     role: payload.role,
+    approves: parsePaymentApprovalPurpose(payload.approves),
     tokenId: s,
     expiresAtMs:
       typeof payload.exp === 'number'
@@ -2083,7 +2096,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         // For LAN host API, do not trust x-forwarded-for (clients can spoof it).
         const remoteIp = String(req.socket.remoteAddress || '').trim();
         const lan = !isLoopback(remoteIp);
-        const { pin } = await parseJson(req);
+        const { pin, approves } = await parseJson(req);
         // Answered like `/auth/login`, on the same attempt budget
         // (`managerPinLan.ts`). It used to be 200 `{ ok: false }`.
         const answer = await checkManagerPinFromLan({
@@ -2112,6 +2125,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         const approvalToken = await issueApprovalToken(secret, {
           userId: result.admin.id,
           role: 'ADMIN',
+          approves: parsePaymentApprovalPurpose(approves),
         });
         return send(
           res,
@@ -2951,20 +2965,20 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           await ensureSettledSaleFromPrintJob(existing as any).catch(
             () => null,
           );
-          const closed = await closeTableAfterIdempotentPayment(
-            String(body?.area || ''),
-            String(body?.tableLabel || ''),
-            String(
-              body?.meta?.kind ||
-                (existing as any)?.payloadJson?.meta?.kind ||
-                '',
-            ),
-            paymentShouldCloseTable(
-              (existing as any)?.payloadJson?.meta ?? body?.meta,
-            ),
+          // Only what is stored under this key counts (`paymentSettle.ts`).
+          const answer = await answerRecordedRequest(
+            existing as any,
+            { area: body?.area, tableLabel: body?.tableLabel },
             { lockHeld },
           );
-          send(res, 200, closed, corsOrigin);
+          if (!answer.ok) {
+            logSecurityEvent('payment_key_reused', {
+              userId: auth?.userId ?? null,
+              area: String(body?.area || ''),
+              tableLabel: String(body?.tableLabel || ''),
+            });
+          }
+          send(res, answer.ok ? 200 : 409, answer, corsOrigin);
           return true;
         };
         if (await replyIfAlreadyRecorded()) return;
@@ -2988,6 +3002,36 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             { ok: false, error: 'invalid payload' },
             corsOrigin,
           );
+        // A reprint prints the till's stored receipt of the sale it names;
+        // tax codes in any other request are dropped (`receiptReprint.ts`).
+        {
+          const reprint = await resolveDeviceReprint(requested);
+          if (reprint.kind === 'refuse') {
+            return send(
+              res,
+              409,
+              {
+                ok: false,
+                code: reprint.code,
+                error: reprint.error,
+                permanent: true,
+              },
+              corsOrigin,
+            );
+          }
+          if (reprint.kind === 'print') {
+            requested.area = String(reprint.payload.area || requested.area);
+            requested.tableLabel = String(
+              reprint.payload.tableLabel || requested.tableLabel,
+            );
+            requested.items = reprint.payload.items || [];
+            requested.covers = reprint.payload.covers ?? null;
+            requested.note = reprint.payload.note ?? null;
+            requested.meta = reprint.payload.meta;
+          } else {
+            requested.meta = stripClientFiscalMeta(requested.meta);
+          }
+        }
         // A kitchen slip prints what its Send put on the bill, or nothing
         // (`orderSlip.ts`).
         const slip = await checkOrderSlip({
@@ -3133,15 +3177,35 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
               meta: payload?.meta,
               actorIsAdmin: String(auth?.role || '').toUpperCase() === 'ADMIN',
               // One approval, one bill (see `approvalUse.ts`).
-              approvalIsValid: (token, adminId) =>
-                claimLanApproval(
+              // Bound to what the manager approved, and to this payment's
+              // adjustments and bill (`approvalPurpose.ts`).
+              approvalIsValid: async (token, adminId) => {
+                const approved = await verifyApprovalToken(secret, token);
+                if (
+                  approved?.approves &&
+                  !purposeAllowsPayment(approved.approves, {
+                    settings,
+                    area: payload.area,
+                    tableLabel: payload.tableLabel,
+                    meta: payload.meta,
+                  })
+                ) {
+                  return false;
+                }
+                return claimLanApproval(
                   secret,
                   token,
                   adminId,
-                  approvalScope('PAYMENT', payload.area, payload.tableLabel),
+                  approvalScope(
+                    'PAYMENT',
+                    payload.area,
+                    payload.tableLabel,
+                    paymentApprovalFingerprint(settings, payload.meta),
+                  ),
                   printIdempotencyKey,
                   { anyKeyInScope: true },
-                ),
+                );
+              },
             });
             if (approvalRefused) {
               return send(res, 409, approvalRefused, corsOrigin);

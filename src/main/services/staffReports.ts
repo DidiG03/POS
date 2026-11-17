@@ -221,6 +221,8 @@ export async function listMyPaidTickets(
           );
     out.push({
       kind: 'PAID',
+      // A reprint names the sale; the till prints its own copy of it.
+      orderId: Number(sale.id),
       area,
       tableLabel,
       createdAt,

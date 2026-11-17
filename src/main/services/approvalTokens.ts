@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { claimApprovalUse } from './approvalUse';
+import type { PaymentApprovalPurpose } from '@shared/approvalPurpose';
 
 /**
  * Short-lived proof that a manager typed their PIN on this machine.
@@ -22,6 +23,8 @@ export interface ApprovalGrant {
   userId: number;
   role: string;
   expiresAt: number;
+  /** What the manager approved, when the screen said (`approvalPurpose.ts`). */
+  purpose?: PaymentApprovalPurpose | null;
 }
 
 /** Attached to `globalThis` so a dev reload doesn't strand live approvals. */
@@ -42,6 +45,7 @@ export function issueApprovalToken(
   userId: number,
   role = 'ADMIN',
   now = Date.now(),
+  purpose: PaymentApprovalPurpose | null = null,
 ): string {
   prune(now);
   const token = crypto.randomBytes(24).toString('base64url');
@@ -49,6 +53,7 @@ export function issueApprovalToken(
     userId: Number(userId),
     role: String(role || '').toUpperCase(),
     expiresAt: now + APPROVAL_TOKEN_TTL_MS,
+    purpose,
   });
   return token;
 }

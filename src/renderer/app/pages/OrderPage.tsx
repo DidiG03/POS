@@ -1,3 +1,4 @@
+import type { PaymentApprovalPurpose } from '@shared/approvalPurpose';
 import {
   lazy,
   memo,
@@ -1625,7 +1626,14 @@ export default function OrderPage() {
     | null
   >(null);
 
-  function requestManagerApproval(action: string) {
+  /** What the open PIN prompt approves, sent with the PIN. */
+  const approvalPurposeRef = useRef<PaymentApprovalPurpose | null>(null);
+
+  function requestManagerApproval(
+    action: string,
+    purpose: PaymentApprovalPurpose | null = null,
+  ) {
+    approvalPurposeRef.current = purpose;
     setApprovalModal({
       open: true,
       action,
@@ -1662,6 +1670,7 @@ export default function OrderPage() {
   }
 
   function requestAdminApproval(action: string) {
+    approvalPurposeRef.current = null;
     setApprovalModal({
       open: true,
       action,
@@ -4245,6 +4254,22 @@ export default function OrderPage() {
                     : needsDiscountApproval
                       ? t('order.approveDiscount')
                       : t('order.approveScRemoval'),
+                  // The approval covers this payment only, as shown.
+                  {
+                    action: 'PAYMENT',
+                    area: selectedTable.area,
+                    tableLabel: selectedTable.label,
+                    discountType:
+                      discountType === 'PERCENT' || discountType === 'AMOUNT'
+                        ? discountType
+                        : 'NONE',
+                    discountValue:
+                      discountType === 'NONE'
+                        ? null
+                        : Number(String(discountValue || '').replace(',', '.')),
+                    serviceChargeRemoved: needsServiceRemovalApproval,
+                    totalBefore: totalBeforeDiscount,
+                  },
                 );
                 if (!managerApprovedBy) return;
               }
@@ -5495,7 +5520,10 @@ export default function OrderPage() {
                 if (e.key !== 'Enter') return;
                 const pin = approvalModal.pin;
                 try {
-                  const r = await window.api.auth.verifyManagerPin(pin);
+                  const r = await window.api.auth.verifyManagerPin(
+                    pin,
+                    approvalPurposeRef.current ?? undefined,
+                  );
                   if (!r?.ok) {
                     setApprovalModal((s) => ({
                       ...s,
@@ -5559,7 +5587,10 @@ export default function OrderPage() {
                 onClick={async () => {
                   const pin = approvalModal.pin;
                   try {
-                    const r = await window.api.auth.verifyManagerPin(pin);
+                    const r = await window.api.auth.verifyManagerPin(
+                      pin,
+                      approvalPurposeRef.current ?? undefined,
+                    );
                     if (!r?.ok) {
                       setApprovalModal((s) => ({
                         ...s,

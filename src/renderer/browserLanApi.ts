@@ -1181,11 +1181,11 @@ export function installBrowserLanApi(): void {
           throw e;
         }
       },
-      async verifyManagerPin(pin: string) {
+      async verifyManagerPin(pin: string, approves?: unknown) {
         try {
           const r = await goLan('/auth/verify-manager-pin', {
             method: 'POST',
-            body: JSON.stringify({ pin }),
+            body: JSON.stringify({ pin, approves }),
           });
           return r && typeof r === 'object' ? r : { ok: false };
         } catch (e) {
