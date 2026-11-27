@@ -3,6 +3,8 @@ import { adminMobileLaunchHash } from './adminMobileBoot';
 import {
   companionPersistLocationHash,
   pickStoredBackendHost,
+  portsFromLocation,
+  servedByTill,
 } from './backendHost';
 
 describe('companionPersistLocationHash', () => {
@@ -104,5 +106,70 @@ describe('pickStoredBackendHost', () => {
     });
     expect(adminMobileLaunchHash('', host)).toBe('#/admin-setup');
     expect(adminMobileLaunchHash('', '10.0.0.5')).toBe('#/admin');
+  });
+});
+
+describe('a waiter page opened in a browser at the till', () => {
+  it('talks to the till that served it when no ?backend= was given', () => {
+    // The phone build behaves like the app, which keeps an empty host
+    // until a till is saved: its PIN went to "http://:3333".
+    expect(
+      pickStoredBackendHost({
+        storedHost: null,
+        envHost: '',
+        isMobileShell: true,
+        locationHostname: '192.168.1.20',
+        locationOrigin: 'http://192.168.1.20:3333',
+      }),
+    ).toBe('192.168.1.20');
+    expect(
+      pickStoredBackendHost({
+        storedHost: null,
+        envHost: '',
+        isMobileShell: true,
+        locationHostname: '192.168.1.20',
+        locationOrigin: 'https://192.168.1.20:3443',
+      }),
+    ).toBe('192.168.1.20');
+  });
+
+  it('still keeps the app (its own bundle) empty until a till is saved', () => {
+    for (const origin of [
+      'http://localhost',
+      'capacitor://localhost',
+      'https://localhost',
+    ]) {
+      expect(
+        pickStoredBackendHost({
+          storedHost: null,
+          envHost: '',
+          isMobileShell: true,
+          locationHostname: 'localhost',
+          locationOrigin: origin,
+        }),
+      ).toBe('');
+    }
+    expect(servedByTill('file://')).toBe(false);
+  });
+
+  it('a saved till or ?backend= still wins', () => {
+    expect(
+      pickStoredBackendHost({
+        storedHost: '10.0.0.5',
+        envHost: '',
+        isMobileShell: true,
+        locationHostname: '192.168.1.20',
+        locationOrigin: 'http://192.168.1.20:3333',
+      }),
+    ).toBe('10.0.0.5');
+  });
+
+  it('takes the port from the page address', () => {
+    expect(portsFromLocation({ protocol: 'http:', port: '3333' })).toEqual({
+      httpPort: '3333',
+    });
+    expect(portsFromLocation({ protocol: 'https:', port: '3443' })).toEqual({
+      httpsPort: '3443',
+    });
   });
 });

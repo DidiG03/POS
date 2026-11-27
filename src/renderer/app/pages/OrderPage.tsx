@@ -1,3 +1,4 @@
+import type { CashLimit } from '@shared/cashLimit';
 import type { PaymentApprovalPurpose } from '@shared/approvalPurpose';
 import {
   lazy,
@@ -51,7 +52,12 @@ import { useTranslation } from 'react-i18next';
 import { parseCountedCash } from '@shared/cashCount';
 import { useSessionStore } from '../../stores/session';
 import { logTicket, printTicket } from '../../api';
-import { retireQueuedTableOpen, tryOrQueue } from '../../utils/offlineQueue';
+import {
+  offlineQueue as replayQueue,
+  retireQueuedTableOpen,
+  tableRecentlyReplayed,
+  tryOrQueue,
+} from '../../utils/offlineQueue';
 import { newIdempotencyKey } from '../../utils/idempotency';
 import { useFavourites } from '../../stores/favourites';
 import { makeFormatAmount } from '../../utils/format';
@@ -114,6 +120,9 @@ import {
 } from '../../utils/tableBill';
 import { applyHostOpenTables } from '../../utils/openTablesSync';
 import { hasLocalCovers } from '../../utils/tableSessionKeepOpen';
+
+/** After this, "Paying…" says the till is slow (DB stall, slow link). */
+const PAY_SLOW_AFTER_MS = 15_000;
 
 function loadTicketCourseBoard() {
   return retryLazyImport(() =>
@@ -675,6 +684,8 @@ export default function OrderPage() {
    * the read is retried when the connection is back.
    */
   const [billOffline, setBillOffline] = useState(false);
+  /** A queued or just-replayed order is not on the till's bill yet. */
+  const [billUpdating, setBillUpdating] = useState(false);
   const [ticketReloadNonce, setTicketReloadNonce] = useState(0);
   const [showCovers, setShowCovers] = useState(false);
   const [coversValue, setCoversValue] = useState('');
@@ -690,6 +701,12 @@ export default function OrderPage() {
   >('CASH');
   /** Cash and card: the card part, as typed (`@shared/paymentSplits`). */
   const [splitCard, setSplitCard] = useState('');
+  /** The tip as typed, and whether it is an amount or a % (`@shared/tips`). */
+  const [tipInput, setTipInput] = useState('');
+  const [tipMode, setTipMode] = useState<'AMOUNT' | 'PERCENT'>('AMOUNT');
+  const [tipMethod, setTipMethod] = useState<'CASH' | 'CARD'>('CARD');
+  /** Albania's cash cap for the open payment (`@shared/cashLimit`). */
+  const [cashLimit, setCashLimit] = useState<CashLimit | null>(null);
   const [posCurrency, setPosCurrency] = useState<string>('EUR');
   const [eurExchangeRate, setEurExchangeRate] = useState<number | null>(null);
   const [splitGuestCount, setSplitGuestCount] = useState(1);
@@ -798,6 +815,16 @@ export default function OrderPage() {
   const [busyAction, setBusyAction] = useState<
     'send' | 'pay' | 'void' | 'request' | null
   >(null);
+  /** "Paying…" has waited long: say the till is slow, and that it is safe. */
+  const [paySlow, setPaySlow] = useState(false);
+  useEffect(() => {
+    if (busyAction !== 'pay') {
+      setPaySlow(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setPaySlow(true), PAY_SLOW_AFTER_MS);
+    return () => window.clearTimeout(timer);
+  }, [busyAction]);
   // Writes go through the durable queue. Never freeze Send/Pay because a
   // heartbeat timed out on congested Wi-Fi — that is the rush-hour failure.
   const connectionOk = true;
@@ -1149,6 +1176,7 @@ export default function OrderPage() {
         hasCovers: boolean;
         area: string;
         label: string;
+        pendingSend?: boolean;
       },
     ) => {
       const currentLines = useTicketStore.getState().lines;
@@ -1169,7 +1197,10 @@ export default function OrderPage() {
         suppressClose: suppressFreeOnEmptyRef.current,
         withinPostSendGrace,
         expectedTotal,
+        pendingSend: opts.pendingSend,
       });
+      setBillUpdating(decision.kind === 'updating');
+      if (decision.kind === 'updating') return;
       if (decision.kind === 'unreadable') {
         // Offline is the offline banner's to say; blocking Send here
         // contradicted "Will send when online" next to it.
@@ -1231,6 +1262,7 @@ export default function OrderPage() {
         hasCovers,
         area,
         label,
+        pendingSend: await tablePendingSend(area, label),
       });
     },
     [applyHostBill],
@@ -1244,6 +1276,16 @@ export default function OrderPage() {
     hydrateGenRef.current += 1;
     transferringFromRef.current = null;
   }, [selectedTable?.area, selectedTable?.label]);
+
+  // "Updating…": read again shortly until the till shows the order.
+  useEffect(() => {
+    if (!billUpdating) return;
+    const timer = window.setTimeout(
+      () => setTicketReloadNonce((n) => n + 1),
+      1_500,
+    );
+    return () => window.clearTimeout(timer);
+  }, [billUpdating, ticketReloadNonce]);
 
   // Read the bill again once the till can be reached.
   useEffect(() => {
@@ -1469,13 +1511,17 @@ export default function OrderPage() {
           ? 'closed'
           : hasTables && hasUnsentItems
             ? 'send'
-            : hasTables && !(typeof coversKnown === 'number' && coversKnown > 0)
-              ? 'covers'
-              : null;
+            : // A lost guest count ("—") never holds up a payment: the
+              // sale is recorded with the count unknown, and it can be
+              // set from the table afterwards (busy-service run, #8).
+              null;
 
   const openPaymentUi = useCallback(() => {
     setPaymentMethod('CASH');
     setSplitCard('');
+    setTipInput('');
+    setTipMode('AMOUNT');
+    setTipMethod('CARD');
     setDiscountType('NONE');
     setDiscountValue('');
     setDiscountReason('');
@@ -1505,7 +1551,13 @@ export default function OrderPage() {
     setShowPayment(true);
     // Let the host open its fiskalizimi connection while the tender is
     // entered. Fire-and-forget: it can only make the payment faster.
-    void window.api.tickets.preparePayment?.()?.catch(() => undefined);
+    setCashLimit(null);
+    void window.api.tickets
+      .preparePayment?.()
+      ?.then((r) => {
+        if (r && typeof r === 'object') setCashLimit(r.cashLimit ?? null);
+      })
+      .catch(() => undefined);
   }, [
     serviceChargeCfg.enabled,
     serviceChargeCfg.mode,
@@ -1790,6 +1842,12 @@ export default function OrderPage() {
   const totalDue = roundMoney(
     Math.max(0, totalBeforeDiscount - discountAmount),
   );
+  /** The tip in money: as typed, or that % of the bill. Never negative. */
+  const tipAmount = (() => {
+    const n = Number(String(tipInput || '').replace(',', '.'));
+    if (!Number.isFinite(n) || n <= 0) return 0;
+    return roundMoney(tipMode === 'PERCENT' ? (totalDue * n) / 100 : n);
+  })();
   const formatAmount = useMemo(() => makeFormatAmount(), []);
   /** Payment screen figures carry the venue currency (€12.50, 1,200 L). */
   const formatMoney = useCallback(
@@ -3511,6 +3569,15 @@ export default function OrderPage() {
             data-keyboard-pad
           >
             <div className="flex min-h-full flex-col space-y-2">
+              {billUpdating && !billUnknown ? (
+                <div
+                  role="status"
+                  data-testid="bill-updating"
+                  className="rounded border border-sky-500/30 bg-sky-500/10 px-3 py-2 text-[13px] leading-snug text-sky-200"
+                >
+                  {t('order.billUpdating')}
+                </div>
+              ) : null}
               {billOffline && isTableOpen && !billUnknown ? (
                 <div
                   role="status"
@@ -4016,17 +4083,6 @@ export default function OrderPage() {
                         onClick={async () => {
                           if (busyAction != null) return;
                           if (selectedTable && payBlockedReason) {
-                            if (
-                              payBlockedReason === 'covers' &&
-                              canEditCovers
-                            ) {
-                              // Ask for the guests now instead of a dead button.
-                              setCoversMode('editOnly');
-                              setCoversValue('1');
-                              setShowCovers(true);
-                              toast.info(t('order.setGuestsBeforePay'));
-                              return;
-                            }
                             toast.warn(
                               t(
                                 payBlockedReason === 'bill'
@@ -4088,9 +4144,11 @@ export default function OrderPage() {
               : t('order.processingPaymentOverlay')
           }
           busyDetail={
-            vatEnabled
-              ? t('order.recordingPaymentFiscal')
-              : t('order.recordingPayment')
+            paySlow
+              ? t('order.payingSlow')
+              : vatEnabled
+                ? t('order.recordingPaymentFiscal')
+                : t('order.recordingPayment')
           }
           hasTables={hasTables}
           tableLabel={selectedTable.label}
@@ -4148,6 +4206,7 @@ export default function OrderPage() {
                   })
           }
           confirmEur={eurDue}
+          cashLimit={cashLimit}
           notice={
             fiscalRefusal ? (
               <div role="alert" className="pos-alert mb-2 p-3 text-[13px]">
@@ -4199,6 +4258,16 @@ export default function OrderPage() {
           onSplitGuestCount={setSplitGuestCount}
           onPaymentMethod={(next) => setPaymentMethod(next)}
           splitCard={splitCard}
+          tipInput={tipInput}
+          tipMode={tipMode}
+          tipMethod={tipMethod}
+          tipAmount={tipAmount}
+          onTipInput={setTipInput}
+          onTipMode={(m) => {
+            setTipMode(m);
+            setTipInput('');
+          }}
+          onTipMethod={setTipMethod}
           onSplitCard={setSplitCard}
           onTogglePrint={() => setPrintReceipt((v) => !v)}
           onConfirm={async () => {
@@ -4217,6 +4286,30 @@ export default function OrderPage() {
                 title: t('order.paymentBlocked'),
               });
               return;
+            }
+            // Albania's cash cap: the till refuses it, so say so first.
+            {
+              const cashPart =
+                paymentMethod === 'CASH'
+                  ? totalDue
+                  : paymentMethod === 'MIXED' && splitCardAmount != null
+                    ? totalDue - splitCardAmount
+                    : 0;
+              if (cashLimit && cashPart > cashLimit.maxCash + 0.0001) {
+                toast.error(
+                  t(
+                    cashLimit.b2b
+                      ? 'order.cashCapOverB2b'
+                      : 'order.cashCapOver',
+                    {
+                      cap: cashLimit.capLek.toLocaleString('en-US'),
+                      max: formatAmount(cashLimit.maxCash),
+                    },
+                  ),
+                  { title: t('order.cashCapRefused') },
+                );
+                return;
+              }
             }
             setBusyAction('pay');
             await ensureStoreTillOpen();
@@ -4368,6 +4461,13 @@ export default function OrderPage() {
                         : {}),
                       paidAt: new Date().toISOString(),
                       amountPaid: Number(amountPaid),
+                      // Not part of the sale (`@shared/tips`).
+                      ...(tipAmount > 0
+                        ? {
+                            tipAmount,
+                            ...(paymentMethod === 'MIXED' ? { tipMethod } : {}),
+                          }
+                        : {}),
                       vatEnabled,
                       baseTotal: totals.total,
                       serviceChargeEnabled: serviceChargeCfg.enabled,
@@ -5742,3 +5842,11 @@ function computeTotals(
 }
 
 // makeFormatAmount imported from utils/format
+
+/** An order for this table is queued here, or was just replayed. */
+async function tablePendingSend(area: string, label: string): Promise<boolean> {
+  if (tableRecentlyReplayed(area, label)) return true;
+  return replayQueue
+    .hasOrderedWorkFor([`${area}\u0001${label}`])
+    .catch(() => false);
+}

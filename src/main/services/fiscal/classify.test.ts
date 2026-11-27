@@ -70,6 +70,28 @@ describe('retryable — but only through a status check', () => {
     expect(c.mustCheckStatus).toBe(true);
   });
 
+  it('an answered 4xx is a refusal, whoever the CIS fault blames', () => {
+    for (const status of [400, 422, 412]) {
+      const c = classifyFiscalAttempt({
+        httpStatus: status,
+        data: cis(
+          'env:SERVER',
+          'Totali nuk mund të jetë më shumë se 500000.00 ALL',
+        ),
+      });
+      expect(c.action).toBe('fix-request');
+      expect(c.outcome).toBe('not-registered');
+      expect(c.retryable).toBe(false);
+    }
+    // Not refusals: the request may not have been read.
+    for (const status of [408, 409, 429]) {
+      expect(
+        classifyFiscalAttempt({ httpStatus: status, data: cis('env:SERVER') })
+          .action,
+      ).not.toBe('fix-request');
+    }
+  });
+
   it('an otherError', () => {
     const c = classifyFiscalAttempt({
       httpStatus: 200,

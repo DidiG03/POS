@@ -1258,7 +1258,50 @@ export async function flagFiscalCorrectionRequired(input: {
 }
 
 /**
- * Drop settled claims past their retention window.
+ * Filed claims whose sale is saved: the claim's job (one invoice per sale)
+ * is done once the payment row holds the invoice codes, and a replay of
+ * the payment is answered from that row before fiskalizimi is reached.
+ */
+export const SETTLED_CLAIM_TTL_MS = 48 * 60 * 60 * 1000;
+/** Refused or withdrawn claims: kept a week for "what happened?". */
+export const DEAD_CLAIM_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const PRUNE_PAGE = 500;
+
+/**
+ * Which claims may go. Pure, for tests.
+ *
+ * Settled claims used to be kept 90 days, each with its whole invoice
+ * draft: one busy service left 23k rows (11.7 MB). Now:
+ *   - REGISTERED, its sale saved with the invoice codes: after 48 h;
+ *   - FAILED / ABANDONED: after 7 days;
+ *   - anything else settled: after 90 days, as before.
+ * Never: anything in flight, queued, or waiting for a person, nor a filed
+ * invoice no sale was matched to (`orphanDetectedAt`), whatever its age.
+ */
+export function claimMayBePruned(input: {
+  record: FiscalClaimRecord | null;
+  updatedAtMs: number;
+  now: number;
+  /** The sale for this claim is saved with its invoice codes. */
+  saleSaved: boolean;
+}): boolean {
+  const { record, now } = input;
+  const age = now - input.updatedAtMs;
+  if (!record) return age >= CLAIM_TTL_MS;
+  if (KEEP_FROM_PRUNE.has(record.state)) return false;
+  if (record.state === 'REGISTERED') {
+    if (record.orphanDetectedAt) return false;
+    if (input.saleSaved && age >= SETTLED_CLAIM_TTL_MS) return true;
+    return age >= CLAIM_TTL_MS;
+  }
+  if (record.state === 'FAILED' || record.state === 'ABANDONED') {
+    return age >= DEAD_CLAIM_TTL_MS;
+  }
+  return age >= CLAIM_TTL_MS;
+}
+
+/**
+ * Drop settled claims past their retention window (`claimMayBePruned`).
  *
  * Anything still awaiting a human is kept regardless of age — an
  * unreconciled sale does not stop mattering because it got old, and
@@ -1267,31 +1310,76 @@ export async function flagFiscalCorrectionRequired(input: {
 export async function pruneFiscalClaims(options?: {
   /** Skip the once-an-hour throttle that keeps payments from scanning. */
   force?: boolean;
+  now?: number;
 }): Promise<number> {
-  const now = Date.now();
+  const now = options?.now ?? Date.now();
   if (!options?.force && now - lastPruneAt < PRUNE_INTERVAL_MS) return 0;
   lastPruneAt = now;
-  const cutoff = new Date(now - CLAIM_TTL_MS);
-  const stale = await prisma.syncState
-    .findMany({
-      where: { key: { startsWith: KEY_PREFIX }, updatedAt: { lt: cutoff } },
-    })
-    .catch(() => [] as any[]);
-  const expired = (stale as any[])
-    .filter((row) => {
-      const record = parseRecord(row?.valueJson);
-      // A filed invoice nobody has matched to a sale is still owed a decision.
-      if (record?.orphanDetectedAt && record.state === 'REGISTERED') {
-        return false;
+  const cutoff = new Date(now - SETTLED_CLAIM_TTL_MS);
+  let removed = 0;
+  let after: string | undefined;
+  // In pages, so a large backlog never loads every draft at once.
+  for (;;) {
+    const page = (await prisma.syncState
+      .findMany({
+        where: {
+          key: after
+            ? { startsWith: KEY_PREFIX, gt: after }
+            : { startsWith: KEY_PREFIX },
+          updatedAt: { lt: cutoff },
+        } as any,
+        orderBy: { key: 'asc' },
+        take: PRUNE_PAGE,
+      })
+      .catch(() => [] as any[])) as any[];
+    if (page.length === 0) break;
+    after = String(page[page.length - 1].key);
+    const parsed = page.map((row) => ({
+      key: String(row.key),
+      record: parseRecord(row?.valueJson),
+      updatedAtMs: new Date(row.updatedAt).getTime(),
+    }));
+    const saleKeys = parsed
+      .filter((p) => p.record?.state === 'REGISTERED')
+      .map((p) => String(p.record?.context?.saleKey || '').trim())
+      .filter(Boolean);
+    const saved = new Set<string>();
+    if (saleKeys.length) {
+      let pays: Array<{ idempotencyKey: string | null }> = [];
+      try {
+        pays = await (prisma as any).payment.findMany({
+          where: {
+            idempotencyKey: { in: saleKeys },
+            fiscalNivf: { not: null },
+          },
+          select: { idempotencyKey: true },
+        });
+      } catch {
+        // Not known to be saved: such claims wait for the 90-day rule.
       }
-      return !record || !KEEP_FROM_PRUNE.has(record.state);
-    })
-    .map((row) => String(row.key));
-  if (expired.length === 0) return 0;
-  const res = await prisma.syncState
-    .deleteMany({ where: { key: { in: expired } } })
-    .catch(() => ({ count: 0 }));
-  return res.count;
+      for (const p of pays) if (p.idempotencyKey) saved.add(p.idempotencyKey);
+    }
+    const expired = parsed
+      .filter((p) =>
+        claimMayBePruned({
+          record: p.record,
+          updatedAtMs: p.updatedAtMs,
+          now,
+          saleSaved: saved.has(String(p.record?.context?.saleKey || '')),
+        }),
+      )
+      .map((p) => p.key);
+    if (expired.length) {
+      const res = await prisma.syncState
+        .deleteMany({ where: { key: { in: expired } } })
+        .catch(() => ({ count: 0 }));
+      removed += res.count;
+    }
+    if (page.length < PRUNE_PAGE) break;
+    // Let payments run between pages.
+    await new Promise((r) => setImmediate(r));
+  }
+  return removed;
 }
 
 /**

@@ -10,8 +10,20 @@ import {
 } from './tillHealth';
 import { readBackupSavedElsewhere } from './dbBackups';
 import { clockOffsetMs } from './fiscal/clock';
+import { listFiscalClaimsNeedingReview } from './fiscal/claims';
+import { coreServices } from './core';
 import { notifyAdminsAndActor } from './adminAlerts';
 import { logIgnored } from './logIgnored';
+
+async function countFiscalReviews(): Promise<number> {
+  const settings: any = await coreServices
+    .readSettings()
+    .catch(logIgnored('tillHealth:settings', null));
+  if (settings?.fiscal?.enabled !== true) return 0;
+  return listFiscalClaimsNeedingReview()
+    .then((r) => r.length)
+    .catch(logIgnored('tillHealth:fiscalReviews', 0));
+}
 
 export async function readTillHealth(nowMs = Date.now()): Promise<{
   warnings: TillHealthWarning[];
@@ -31,6 +43,7 @@ export async function readTillHealth(nowMs = Date.now()): Promise<{
       ? new Date(firstUser.createdAt).toISOString()
       : null,
     clockOffsetMs: clockOffsetMs(nowMs),
+    fiscalReviews: await countFiscalReviews(),
   });
   return { warnings, savedElsewhereAt: saved?.at ?? null, freeBytes };
 }

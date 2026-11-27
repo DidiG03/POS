@@ -1961,8 +1961,23 @@ export interface ApiTickets {
   /**
    * The payment screen opened. Lets the host connect to the fiscal provider
    * while the tender is entered. Best-effort; never fails the caller.
+   * Answers with Albania's cash cap for the sale (`@shared/cashLimit`);
+   * given the planned payment, also whether the till will take it. An
+   * older till answers `true`.
    */
-  preparePayment(): Promise<boolean>;
+  preparePayment(input?: {
+    method?: string;
+    totalAfter?: number;
+    splits?: Array<{ method: string; amount: number }>;
+  }): Promise<
+    | boolean
+    | {
+        ok: boolean;
+        cashLimit?: import('./cashLimit').CashLimit | null;
+        code?: string;
+        error?: string;
+      }
+  >;
 }
 
 /**

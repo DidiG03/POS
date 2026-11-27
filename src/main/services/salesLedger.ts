@@ -5,6 +5,7 @@
  * the kitchen snapshot. Revenue reports must read Order, not PrintJob JSON.
  */
 
+import { tipOf } from '@shared/tips';
 import { prisma } from '@db/client';
 import { coreServices } from './core';
 import { roundMoney } from '@shared/pricing';
@@ -165,7 +166,9 @@ export async function writeSettledSale(
   const coversRaw = Number(payload.covers);
   const covers =
     Number.isFinite(coversRaw) && coversRaw > 0 ? Math.floor(coversRaw) : null;
-  const change = cashChangeDue(meta.amountPaid, figures.total);
+  // Cash handed over also covers a cash tip: that part is not change.
+  const cashTip = tipOf(meta)?.method === 'CASH' ? tipOf(meta)!.amount : 0;
+  const change = cashChangeDue(meta.amountPaid, figures.total + cashTip);
   const seatId = String(meta.seatId || lines[0]?.seatId || '').trim() || null;
   const seatLabel = String(meta.seatLabel || '').trim() || null;
   const discountType = String(meta.discountType || '').trim() || null;
@@ -219,7 +222,8 @@ export async function writeSettledSale(
           create: {
             method: figures.method,
             amount: money(figures.total),
-            tip: money(0),
+            // Kept apart from the sale (`@shared/tips`).
+            tip: money(tipOf(meta)?.amount ?? 0),
             change: money(change),
             paidAt,
             idempotencyKey: key,

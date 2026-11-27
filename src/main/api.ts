@@ -155,6 +155,19 @@ import { checkPaymentApproval } from './services/paymentApproval';
 import { checkPaymentLines } from './services/paymentLines';
 import { noticeShortPin } from './services/shortPinNotice';
 import { INVALID_SPLIT, normalizePaymentSplit } from '@shared/paymentSplits';
+import { checkCashLimit, preparePaymentAnswer } from '@shared/cashLimit';
+import {
+  paymentReceiptPrints,
+  voidTicketWithoutBill,
+} from './services/routeGuards';
+import {
+  isDatabaseError,
+  staffSafeMessage,
+  TILL_BUSY,
+  TILL_BUSY_MESSAGE,
+  TILL_BUSY_MESSAGE_GENERIC,
+} from '@shared/staffError';
+import { INVALID_TIP, normalizeTip } from '@shared/tips';
 import {
   CASH_COUNT_REQUIRED,
   cashCountAtClockOut,
@@ -2939,12 +2952,13 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
         return send(res, 200, result, corsOrigin);
       }
       if (req.method === 'POST' && pathname === '/tickets/prepare-payment') {
-        // A phone opened the payment screen. See `tickets:preparePayment`.
-        void coreServices
-          .readSettings()
-          .then((settings) => warmFiscalConnection(settings as any))
-          .catch(() => undefined);
-        return send(res, 200, { ok: true }, corsOrigin);
+        // A phone opened the payment screen, or is about to charge. See
+        // `tickets:preparePayment`.
+        const body = await parseJson(req).catch(() => null);
+        const settings = await coreServices.readSettings();
+        void warmFiscalConnection(settings as any).catch(() => undefined);
+        const answer = preparePaymentAnswer(settings, body);
+        return send(res, answer.ok ? 200 : 409, answer, corsOrigin);
       }
       if (req.method === 'POST' && pathname === '/print/ticket') {
         const body = await parseJson(req);
@@ -3228,6 +3242,26 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
               );
             }
             payload.meta = splitOk.meta;
+            // The tip: on the payment, never in the sale (`@shared/tips`).
+            const tipOk = normalizeTip(payload.meta || {});
+            if (!tipOk.ok) {
+              return send(
+                res,
+                409,
+                {
+                  ok: false,
+                  code: INVALID_TIP,
+                  error: tipOk.error,
+                  permanent: true,
+                },
+                corsOrigin,
+              );
+            }
+            payload.meta = tipOk.meta;
+            // Albania's cash cap, before anything is taken
+            // (`@shared/cashLimit`).
+            const cashCap = checkCashLimit(settings, payload.meta);
+            if (!cashCap.ok) return send(res, 409, cashCap, corsOrigin);
             // Key present, every line on the menu or the bill, and a
             // seat's share only for what the bill has (`paymentLines.ts`).
             const linesRefused = await checkPaymentLines({
@@ -3308,14 +3342,31 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
               );
             }
             if (outcome.kind === 'retryable') {
+              // Nothing taken; a retry with this key is deduped.
+              if (outcome.message === TILL_BUSY_MESSAGE) {
+                return send(
+                  res,
+                  503,
+                  {
+                    ok: false,
+                    code: TILL_BUSY,
+                    error: TILL_BUSY_MESSAGE,
+                    message: TILL_BUSY_MESSAGE,
+                  },
+                  corsOrigin,
+                );
+              }
+              const message = staffSafeMessage(outcome.message, {
+                payment: true,
+              });
               return send(
                 res,
                 502,
                 {
                   ok: false,
                   code: 'FISCAL_FAILED',
-                  error: outcome.message,
-                  message: outcome.message,
+                  error: message,
+                  message,
                 },
                 corsOrigin,
               );
@@ -3395,6 +3446,23 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
                 userId: Number(auth?.userId || 0),
                 paymentKey: printIdempotencyKey,
               });
+            }
+            // "Print receipt" off: the sale is recorded above and nothing
+            // is printed, as on the till (`tickets:print`, recordOnly).
+            if (
+              !paymentReceiptPrints({
+                recordOnly: body?.recordOnly,
+                kind: payKind,
+              })
+            ) {
+              return afterPaymentLock(async () =>
+                send(
+                  res,
+                  200,
+                  paymentPrintAccepted(true, closeTable, fiscalPending),
+                  corsOrigin,
+                ),
+              );
             }
             return afterPaymentLock(async () => {
               const r = await dispatchTicket(fiscalPayload, settings as any, {
@@ -3873,6 +3941,15 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             String(area),
             String(tableLabel),
           );
+          // Nothing to void: no sitting and the table not open. This used
+          // to answer 200 "ok", so a phone believed it had voided a bill.
+          const noBill = voidTicketWithoutBill({
+            hasSitting: Boolean(last),
+            tableOpen:
+              Boolean(last) ||
+              (await tableIsOpenForPayment(String(area), String(tableLabel))),
+          });
+          if (noBill) return send(res, noBill.status, noBill.body, corsOrigin);
           if (
             planTicketVoid((last?.itemsJson as any[]) || []).outcome === 'paid'
           ) {
@@ -5619,6 +5696,19 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           res,
           code,
           { error: message, code: errCode || undefined },
+          corsOrigin,
+        );
+      }
+      // The ledger is busy or stalled: retryable, in words staff can read;
+      // never the ORM's text (`@shared/staffError`).
+      if (isDatabaseError(e)) {
+        console.error('API error (database busy)', e);
+        const pay = String(req.url || '').startsWith('/print/ticket');
+        const message = pay ? TILL_BUSY_MESSAGE : TILL_BUSY_MESSAGE_GENERIC;
+        return send(
+          res,
+          503,
+          { ok: false, code: TILL_BUSY, error: message, message },
           corsOrigin,
         );
       }

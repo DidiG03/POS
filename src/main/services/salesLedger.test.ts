@@ -59,6 +59,27 @@ describe('writeSettledSale', () => {
     menuItemFindMany.mockResolvedValue([{ id: 9, sku: 'P1' }]);
   });
 
+  it('stores the tip on the payment, apart from the sale', async () => {
+    await writeSettledSale(db(), {
+      payload: {
+        ...payload,
+        meta: {
+          ...payload.meta,
+          amountPaid: 1400,
+          tip: { amount: 150, method: 'CASH' },
+        },
+      },
+      idempotencyKey: 'tip-1',
+    });
+    const data = orderCreate.mock.calls[0][0].data;
+    // The sale is the bill; the tip is on the payment only.
+    expect(Number(data.total)).toBe(1200);
+    expect(Number(data.payments.create.amount)).toBe(1200);
+    expect(Number(data.payments.create.tip)).toBe(150);
+    // 1400 handed over: 1200 bill + 150 cash tip, 50 back.
+    expect(Number(data.payments.create.change)).toBe(50);
+  });
+
   it('ignores kitchen slips', async () => {
     const r = await writeSettledSale(db(), {
       payload: { ...payload, meta: { kind: 'ORDER' } },

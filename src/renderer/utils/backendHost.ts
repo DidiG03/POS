@@ -1,4 +1,5 @@
 import { buildLanHttpUrl, buildLanHttpsUrl } from '@shared/lanHost';
+import { CAPACITOR_WEBVIEW_ORIGINS } from '@shared/capacitorWebviewOrigins';
 import { clearLanTokenMemory, writeLanToken } from './lanAuthToken';
 import { invalidateHostScopedCaches } from './posReadCache';
 import { notifyBackendHostChanged } from './posServerScanEvent';
@@ -35,13 +36,42 @@ export function pickStoredBackendHost(input: {
   envHost: string;
   isMobileShell: boolean;
   locationHostname: string;
+  /** `window.location.origin`; a page served by the till uses it. */
+  locationOrigin?: string;
 }): string {
   const stored = String(input.storedHost || '').trim();
   if (stored) return stored;
   const env = String(input.envHost || '').trim();
   if (env) return env;
-  if (input.isMobileShell) return '';
+  // The waiter page opened in a browser at the till (http://till:3333/)
+  // talks to that till. It is built like the app, so it used to keep an
+  // empty host as the app does and send its PIN to "http://:3333".
+  if (input.isMobileShell && !servedByTill(input.locationOrigin)) return '';
   return String(input.locationHostname || '').trim() || 'localhost';
+}
+
+/**
+ * True when this page came from a till over the network, not from the
+ * app's own bundle (a Capacitor WebView origin) or a file.
+ */
+export function servedByTill(origin: string | undefined | null): boolean {
+  const o = String(origin || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\/$/, '');
+  if (!/^https?:\/\/[^/]+$/.test(o)) return false;
+  return !(CAPACITOR_WEBVIEW_ORIGINS as readonly string[]).includes(o);
+}
+
+/** The till's ports from the page's own address, when it served the page. */
+export function portsFromLocation(loc: { protocol: string; port: string }): {
+  httpPort?: string;
+  httpsPort?: string;
+} {
+  const port = String(loc.port || '').trim();
+  if (loc.protocol === 'https:') return { httpsPort: port || '443' };
+  if (loc.protocol === 'http:') return { httpPort: port || '80' };
+  return {};
 }
 
 /**
@@ -104,14 +134,33 @@ export function resolveBackendHost(): BackendHost {
   let httpPort = '3333';
   let httpsPort = '3443';
   try {
+    const storedHost = localStorage.getItem('pos_backend_host');
     host = pickStoredBackendHost({
-      storedHost: localStorage.getItem('pos_backend_host'),
+      storedHost,
       envHost,
       isMobileShell,
       locationHostname: window.location.hostname,
+      locationOrigin: window.location.origin,
     });
-    httpPort = localStorage.getItem('pos_backend_http') || envHttp || '3333';
-    httpsPort = localStorage.getItem('pos_backend_https') || envHttps || '3443';
+    // No ?backend= and nothing saved: the till that served this page, on
+    // the port it was opened on.
+    const fromPage =
+      !String(storedHost || '').trim() &&
+      !envHost &&
+      (isMobileShell || isLanHttpClient()) &&
+      servedByTill(window.location.origin)
+        ? portsFromLocation(window.location)
+        : {};
+    httpPort =
+      localStorage.getItem('pos_backend_http') ||
+      envHttp ||
+      fromPage.httpPort ||
+      '3333';
+    httpsPort =
+      localStorage.getItem('pos_backend_https') ||
+      envHttps ||
+      fromPage.httpsPort ||
+      '3443';
   } catch {
     // ignore
   }

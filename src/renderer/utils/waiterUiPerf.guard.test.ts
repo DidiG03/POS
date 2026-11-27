@@ -202,9 +202,11 @@ describe('waiter UI stays responsive', () => {
     );
 
     const ipc = read('src/main/index.ts');
+    // The handler body; `ipcHandle('tickets:print'` wraps it to answer a
+    // stalled ledger as "the till is busy" (`@shared/staffError`).
     const ipcPrint = sliceBetween(
       ipc,
-      "ipcHandle('tickets:print'",
+      'const ticketsPrintHandler',
       "ipcHandle('reports:listMyActiveTickets'",
     );
     expect(ipcPrint).toContain('fireDispatchTicket(');

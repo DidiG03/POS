@@ -29,11 +29,7 @@ import {
   getQueuedCountForOwner,
   offlineQueue,
 } from '../utils/offlineQueue';
-import {
-  HEARTBEAT_MISSES_FOR_DOWN,
-  heartbeatDelayMs,
-  isHostUnreachable,
-} from '../utils/netQuality';
+import { heartbeatDelayMs, tillLooksDown } from '../utils/netQuality';
 import { Button } from '../components/ui/Button';
 import { ConfirmDialog, Modal } from '../components/ui/Modal';
 import { EmptyState } from '../components/ui/Surface';
@@ -327,7 +323,9 @@ export default function AppLayout() {
         if (cancelled) return;
         misses += 1;
         hadFailure = true;
-        if (misses >= HEARTBEAT_MISSES_FOR_DOWN || isHostUnreachable()) {
+        // Not on one slow answer: missed pings in a row and nothing else
+        // getting through either (`tillLooksDown`).
+        if (tillLooksDown({ misses })) {
           wasDown = true;
           setBackendOk(false);
         }

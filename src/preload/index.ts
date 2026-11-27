@@ -264,7 +264,8 @@ const api: Api = {
     listPaidTables: (input: { dateIso: string }) =>
       ipcRenderer.invoke('tickets:listPaidTables', input),
     print: (payload: any) => ipcRenderer.invoke('tickets:print', payload),
-    preparePayment: () => ipcRenderer.invoke('tickets:preparePayment'),
+    preparePayment: (input?: unknown) =>
+      ipcRenderer.invoke('tickets:preparePayment', input ?? null),
   },
   print: {
     listRetries: () => ipcRenderer.invoke('print:listRetries'),

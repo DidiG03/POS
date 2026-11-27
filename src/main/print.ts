@@ -1,3 +1,4 @@
+import { tipOf, type PaymentTip } from '@shared/tips';
 import { renderSVG } from 'uqr';
 import type { SettingsDTO, TicketPrintMeta } from '@shared/ipc';
 import { resolveVatEnabledFromMeta } from '@shared/vatFromFiscal';
@@ -579,6 +580,32 @@ export function zReportRows(
       });
     }
   }
+  // Tips: not sales, so after the payments and outside the VAT block.
+  if (z.tips && Number(z.tips.total) > 0) {
+    rows.push(
+      { kind: 'sep' },
+      {
+        kind: 'line',
+        text: L('Tips (not in sales)', 'Bakshish (jo në shitje)'),
+      },
+    );
+    for (const r of z.tips.byMethod || []) {
+      rows.push({
+        kind: 'pair',
+        label: `${r.method} (${r.count})`,
+        value: m(r.amount),
+      });
+    }
+    for (const w of z.tips.byWaiter || []) {
+      rows.push({ kind: 'pair', label: `  ${w.name}`, value: m(w.amount) });
+    }
+    rows.push({
+      kind: 'pair',
+      label: L('Tips total', 'Bakshish gjithsej'),
+      value: m(z.tips.total),
+      bold: true,
+    });
+  }
   if (z.vatEnabled && Array.isArray(z.byVatRate) && z.byVatRate.length) {
     rows.push(
       { kind: 'sep' },
@@ -673,6 +700,15 @@ export function zReportRows(
       label: L('Cash sales', 'Shitje me para në dorë'),
       value: mc(cash.sales, tillCur),
     },
+    ...(Number(cash.tips) > 0
+      ? [
+          {
+            kind: 'pair' as const,
+            label: L('Cash tips', 'Bakshish në para'),
+            value: mc(cash.tips, tillCur),
+          },
+        ]
+      : []),
     {
       kind: 'pair',
       label: L('Cash refunds', 'Kthime në para'),
@@ -1147,6 +1183,13 @@ export function buildEscposTicket(
       }
     }
     if (method) lines.push(escposText(`${copy.method}: ${method}\n`));
+    // The tip, apart from the sale it is not part of (`@shared/tips`).
+    const tip = correction ? null : tipOf(meta);
+    if (tip) {
+      for (const row of receiptTipRows(tip, totalFinal, lang)) {
+        lines.push(...twoCol(row.label, formatMoneyEscpos(row.amount), layout));
+      }
+    }
     if (approvedBy) lines.push(escposText(`${copy.approved}: ${approvedBy}\n`));
 
     const fiscalNivf = String(meta?.fiscalNivf || '').trim();
@@ -1391,7 +1434,17 @@ export function buildHtmlReceipt(
     kind === 'CORRECTION'
       ? fiscalBlock
       : kind === 'PAYMENT'
-        ? `<div class="sep"></div><div class="paid">${safe(copy.paid)}</div>${payMethod ? `<div class="small">${safe(copy.method)}: ${safe(payMethod)}</div>` : ''}${fiscalBlock}`
+        ? `<div class="sep"></div><div class="paid">${safe(copy.paid)}</div>${payMethod ? `<div class="small">${safe(copy.method)}: ${safe(payMethod)}</div>` : ''}${(() => {
+            const tip = tipOf(meta);
+            return tip
+              ? receiptTipRows(tip, totalFinal, lang)
+                  .map(
+                    (r) =>
+                      `<div class="small">${safe(r.label)}: ${safe(formatMoneyEscpos(r.amount))}</div>`,
+                  )
+                  .join('')
+              : '';
+          })()}${fiscalBlock}`
         : '';
 
   const subtitleParts: string[] = [];
@@ -2032,4 +2085,22 @@ function formatDateTime(d: Date): string {
   const pad = (n: number) => String(n).padStart(2, '0');
   // dd/mm/yyyy hh:mm
   return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/** The tip lines of a payment receipt: the tip, then what was paid in all. */
+export function receiptTipRows(
+  tip: PaymentTip,
+  saleTotal: number,
+  lang: string,
+): Array<{ label: string; amount: number }> {
+  const sq = lang === 'sq';
+  const method =
+    tip.method === 'CASH' ? (sq ? 'para' : 'cash') : sq ? 'kartë' : 'card';
+  return [
+    { label: `${sq ? 'Bakshish' : 'Tip'} (${method})`, amount: tip.amount },
+    {
+      label: sq ? 'Paguar me bakshish' : 'Paid incl. tip',
+      amount: roundMoney(Number(saleTotal || 0) + tip.amount),
+    },
+  ];
 }

@@ -1,3 +1,4 @@
+import type { CashLimit } from '@shared/cashLimit';
 import { useEffect, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
@@ -88,6 +89,14 @@ export function PaymentCheckout({
   onClose,
   onConfirm,
   notice,
+  cashLimit,
+  tipInput = '',
+  tipMode = 'AMOUNT',
+  tipMethod = 'CARD',
+  tipAmount = 0,
+  onTipInput,
+  onTipMode,
+  onTipMethod,
 }: {
   open: boolean;
   busy: boolean;
@@ -140,6 +149,18 @@ export function PaymentCheckout({
   onConfirm: () => void;
   /** Shown above the Pay button (a refused invoice and what to do). */
   notice?: ReactNode;
+  /** Albania's cash cap for this sale (`@shared/cashLimit`), if any. */
+  cashLimit?: CashLimit | null;
+  /** Tip as typed: an amount, or a % of the bill (`@shared/tips`). */
+  tipInput?: string;
+  tipMode?: 'AMOUNT' | 'PERCENT';
+  /** Cash + card: which part the tip is on. */
+  tipMethod?: 'CASH' | 'CARD';
+  /** The tip in money, worked out from the input. */
+  tipAmount?: number;
+  onTipInput?: (next: string) => void;
+  onTipMode?: (next: 'AMOUNT' | 'PERCENT') => void;
+  onTipMethod?: (next: 'CASH' | 'CARD') => void;
 }) {
   const { t } = useTranslation();
   // Cash and card: the cash part is what the card does not cover.
@@ -149,6 +170,16 @@ export function PaymentCheckout({
     if (card == null || !(card > 0) || card >= totalDue) return null;
     return Math.round((totalDue - card) * 100) / 100;
   })();
+  // Cash over the legal cap: offer card, or cash + card with the most cash
+  // allowed (the till refuses it anyway).
+  const cashPart =
+    paymentMethod === 'CASH'
+      ? totalDue
+      : paymentMethod === 'MIXED'
+        ? (splitCash ?? 0)
+        : 0;
+  const overCashCap =
+    !!cashLimit && cashPart > cashLimit.maxCash + 0.0001 && totalDue > 0;
   const [itemsOpen, setItemsOpen] = useState(false);
   const [discountOpen, setDiscountOpen] = useState(false);
 
@@ -335,6 +366,53 @@ export function PaymentCheckout({
                 </PayMethodTile>
               ) : null}
             </div>
+            {overCashCap && cashLimit ? (
+              <div
+                role="alert"
+                data-testid="cash-cap-warning"
+                className="mt-3 rounded-lg border border-[color:var(--pos-danger,#b91c1c)] p-3 text-[13px]"
+              >
+                <div className="font-semibold">
+                  {t(
+                    cashLimit.b2b
+                      ? 'order.cashCapOverB2b'
+                      : 'order.cashCapOver',
+                    {
+                      cap: cashLimit.capLek.toLocaleString('en-US'),
+                      max: formatAmount(cashLimit.maxCash),
+                    },
+                  )}
+                </div>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    className="pos-btn"
+                    onClick={() => onPaymentMethod('CARD')}
+                  >
+                    {t('order.cashCapTakeCard')}
+                  </button>
+                  {onSplitCard ? (
+                    <button
+                      type="button"
+                      className="pos-btn"
+                      onClick={() => {
+                        onPaymentMethod('MIXED');
+                        onSplitCard(
+                          (
+                            Math.ceil((totalDue - cashLimit.maxCash) * 100) /
+                            100
+                          ).toFixed(2),
+                        );
+                      }}
+                    >
+                      {t('order.cashCapSplit', {
+                        max: formatAmount(cashLimit.maxCash),
+                      })}
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
             {paymentMethod === 'MIXED' && onSplitCard ? (
               <div className="mt-3 space-y-1.5">
                 <label className="block text-[12px] text-[color:var(--pos-fg-muted)]">
@@ -358,11 +436,83 @@ export function PaymentCheckout({
             ) : null}
           </section>
 
+          {onTipInput ? (
+            <section className="pos-pay-card" data-testid="tip-section">
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-[13px] font-semibold">
+                  {t('order.tip')}
+                </div>
+                <div className="flex gap-1">
+                  {[5, 10, 15].map((pct) => (
+                    <button
+                      key={pct}
+                      type="button"
+                      className={`pos-pay-stepper px-2 ${tipMode === 'PERCENT' && tipInput === String(pct) ? 'ring-2' : ''}`}
+                      onClick={() => {
+                        onTipMode?.('PERCENT');
+                        onTipInput(String(pct));
+                      }}
+                    >
+                      {pct}%
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="mt-2 flex items-center gap-2">
+                <input
+                  className="pos-input w-full"
+                  inputMode="decimal"
+                  placeholder={tipMode === 'PERCENT' ? '0 %' : '0.00'}
+                  value={tipInput}
+                  onChange={(e) => onTipInput(e.target.value)}
+                  aria-label={t('order.tip')}
+                />
+                <button
+                  type="button"
+                  className="pos-btn shrink-0"
+                  onClick={() =>
+                    onTipMode?.(tipMode === 'PERCENT' ? 'AMOUNT' : 'PERCENT')
+                  }
+                >
+                  {tipMode === 'PERCENT' ? '%' : posCurrency}
+                </button>
+              </div>
+              {paymentMethod === 'MIXED' && onTipMethod && tipAmount > 0 ? (
+                <div className="mt-2 flex gap-2 text-[12px]">
+                  {(['CARD', 'CASH'] as const).map((m) => (
+                    <button
+                      key={m}
+                      type="button"
+                      className={`pos-btn ${tipMethod === m ? 'ring-2' : ''}`}
+                      onClick={() => onTipMethod(m)}
+                    >
+                      {t(m === 'CARD' ? 'order.tipOnCard' : 'order.tipInCash')}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+              {tipAmount > 0 ? (
+                <div className="mt-1.5 text-[12px] text-[color:var(--pos-fg-muted)]">
+                  {t('order.tipTotal', {
+                    tip: formatAmount(tipAmount),
+                    total: formatAmount(
+                      Math.round((totalDue + tipAmount) * 100) / 100,
+                    ),
+                  })}
+                </div>
+              ) : null}
+            </section>
+          ) : null}
+
           {addMode !== 'seat' ? (
             <section className="pos-pay-card flex items-center justify-between gap-3">
               <div className="min-w-0">
                 <div className="text-[13px] font-semibold">
                   {t('order.splitBill')}
+                </div>
+                {/* Figures only: it takes one payment (busy-service run, #9). */}
+                <div className="text-[11px] text-[color:var(--pos-fg-muted)]">
+                  {t('order.splitBillInfo')}
                 </div>
                 {split ? (
                   <div className="mt-0.5 text-[12px] text-[color:var(--pos-fg-muted)]">
@@ -417,7 +567,16 @@ export function PaymentCheckout({
           (paymentMethod === 'MIXED' && splitCash != null) ? (
             <CashChangeCalculator
               key={open ? 'open' : 'closed'}
-              totalDue={paymentMethod === 'MIXED' ? splitCash! : totalDue}
+              totalDue={
+                Math.round(
+                  ((paymentMethod === 'MIXED' ? splitCash! : totalDue) +
+                    (paymentMethod === 'CASH' ||
+                    (paymentMethod === 'MIXED' && tipMethod === 'CASH')
+                      ? tipAmount
+                      : 0)) *
+                    100,
+                ) / 100
+              }
               posCurrency={posCurrency}
               eurExchangeRate={eurExchangeRate}
               formatAmount={formatAmount}

@@ -132,7 +132,39 @@ export const HEARTBEAT_OK_MS = 5_000;
 /** Longest gap between heartbeats while the till is silent. */
 export const HEARTBEAT_MAX_MS = 30_000;
 /** Misses in a row before the till is shown as unreachable. */
-export const HEARTBEAT_MISSES_FOR_DOWN = 2;
+export const HEARTBEAT_MISSES_FOR_DOWN = 3;
+/** ...and no request at all has reached it for this long. */
+export const DOWN_AFTER_SILENCE_MS = 15_000;
+
+/**
+ * Whether to tell the waiter "Cannot reach the till".
+ *
+ * On a slow, lossy link (300-800 ms, 7% loss) the banner came on while
+ * orders and payments were still going through: two lost pings, or three
+ * failed requests of any kind, were enough. Now it takes missed pings in a
+ * row AND nothing at all answered for a while; one success clears it.
+ */
+export function tillLooksDown(input: {
+  misses: number;
+  now?: number;
+  lastSuccessAt?: number;
+}): boolean {
+  const now = input.now ?? Date.now();
+  const last = input.lastSuccessAt ?? lastSuccessAt;
+  if (input.misses < HEARTBEAT_MISSES_FOR_DOWN) return false;
+  return !last || now - last >= DOWN_AFTER_SILENCE_MS;
+}
+
+/**
+ * How long a heartbeat may take: 3 s on a good link, longer on a slow one
+ * (four times the usual round trip, at most 8 s), so a slow answer is not
+ * counted as a miss.
+ */
+export function heartbeatTimeoutMs(): number {
+  const rtt = medianRtt();
+  if (rtt == null) return 3_000;
+  return Math.min(8_000, Math.max(3_000, Math.round(rtt * 4)));
+}
 
 /**
  * When to ping the till next: every 5 s while it answers, then backing off

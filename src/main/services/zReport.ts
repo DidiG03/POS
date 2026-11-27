@@ -13,6 +13,7 @@
  *
  * easyPos has no day-close route, so nothing is sent to the tax service.
  */
+import { sumTips, type TipTotals } from '@shared/tips';
 import { prisma } from '@db/client';
 import { KeyedAsyncMutex } from '@shared/asyncMutex';
 import { roundMoney } from '@shared/money';
@@ -64,6 +65,11 @@ export type ZReport = {
     waitingForReview: number;
   };
   corrections: { count: number; cancellations: number; amount: number };
+  /**
+   * Tips, kept out of `sales` (not revenue, not in the VAT base or the tax
+   * invoice). By method and by waiter; both add up to `total`.
+   */
+  tips?: TipTotals;
   voidedTickets: number;
   /** Bills printed before payment in the period (`billSlip.ts`). */
   billsPrinted: number;
@@ -78,6 +84,8 @@ export type ZReport = {
     currency: string;
     opening: number | null;
     sales: number;
+    /** Cash tips: in the drawer, though not sales (`@shared/tips`). */
+    tips?: number;
     /**
      * Cash given back in the period for sales paid in cash, whatever
      * period those sales were in. It used to be left in "expected", so
@@ -250,6 +258,39 @@ async function openingFloatForPeriod(
     }
   }
   return null;
+}
+
+/** Tips on these sales' payments, with who served them. */
+async function readTipsForOrders(orderIds: number[]): Promise<TipTotals> {
+  const rows: Array<{
+    tip: unknown;
+    meta?: unknown;
+    userId?: number | null;
+    userName?: string | null;
+  }> = [];
+  for (const ids of chunks(orderIds, 500)) {
+    const found = (await prisma.payment.findMany({
+      where: { orderId: { in: ids }, tip: { gt: 0 } } as any,
+      select: {
+        tip: true,
+        metaJson: true,
+        order: { select: { userId: true, userName: true } },
+      } as any,
+    })) as Array<{
+      tip: unknown;
+      metaJson?: unknown;
+      order?: { userId?: number | null; userName?: string | null } | null;
+    }>;
+    for (const p of found) {
+      rows.push({
+        tip: p.tip,
+        meta: p.metaJson,
+        userId: p.order?.userId ?? null,
+        userName: p.order?.userName ?? null,
+      });
+    }
+  }
+  return sumTips(rows);
 }
 
 function chunks<T>(list: T[], size: number): T[][] {
@@ -463,6 +504,10 @@ async function computeZReportFigures(input: {
   const depositsAll = sumCents('deposit');
   const withdrawalsAll = sumCents('withdraw');
   const cashSalesCents = methods.get('CASH')?.amount ?? 0;
+  const tips = await readTipsForOrders(orderIds);
+  const cashTipCents = cents(
+    tips.byMethod.find((m) => m.method === 'CASH')?.amount ?? 0,
+  );
   const openingTill = openingAll == null ? null : toTill(openingAll);
   const depositsTill = toTill(depositsAll);
   const withdrawalsTill = toTill(withdrawalsAll);
@@ -511,12 +556,14 @@ async function computeZReportFigures(input: {
         corrections.reduce((a, c) => a + Number(c.amountDelta || 0), 0),
       ),
     },
+    tips,
     voidedTickets,
     billsPrinted,
     cash: {
       currency,
       opening: openingTill == null ? null : fromCents(openingTill),
       sales: fromCents(cashSalesCents),
+      tips: fromCents(cashTipCents),
       refunds: fromCents(cashRefundCents),
       deposits: depositsTill == null ? null : fromCents(depositsTill),
       withdrawals: withdrawalsTill == null ? null : fromCents(withdrawalsTill),
@@ -525,7 +572,8 @@ async function computeZReportFigures(input: {
           ? null
           : fromCents(
               openingTill +
-                cashSalesCents -
+                cashSalesCents +
+                cashTipCents -
                 cashRefundCents +
                 depositsTill -
                 withdrawalsTill,

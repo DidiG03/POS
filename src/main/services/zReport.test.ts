@@ -5,6 +5,7 @@ const h = vi.hoisted(() => ({
   store: new Map<string, any>(),
   sales: [] as any[],
   payments: [] as any[],
+  tipPayments: [] as any[],
   items: [] as any[],
   corrections: [] as any[],
   billsPrinted: 0,
@@ -47,9 +48,9 @@ vi.mock('@db/client', () => ({
       return out;
     },
     payment: {
-      findMany: async () => {
+      findMany: async ({ where }: any) => {
         if (h.failPayments) throw new Error('SQLITE_BUSY');
-        return h.payments;
+        return where?.tip ? h.tipPayments : h.payments;
       },
     },
     orderItem: { findMany: async () => h.items },
@@ -147,6 +148,53 @@ beforeEach(() => {
 const noPrint = async () => true;
 
 describe('Z report', () => {
+  it('reports tips apart from sales, by method and by waiter, and counts cash tips in the drawer', async () => {
+    h.tipPayments = [
+      // Card, cash, and the card tip of a cash + card payment.
+      {
+        tip: 5,
+        metaJson: { tip: { amount: 5, method: 'CARD' } },
+        order: { userId: 2, userName: 'Ben' },
+      },
+      {
+        tip: 2.5,
+        metaJson: { tip: { amount: 2.5, method: 'CASH' } },
+        order: { userId: 2, userName: 'Ben' },
+      },
+      {
+        tip: 3,
+        metaJson: { method: 'MIXED', tip: { amount: 3, method: 'CARD' } },
+        order: { userId: 3, userName: 'Cara' },
+      },
+    ];
+    try {
+      const { report } = await issueZReport({ actorUserId: 1, print: noPrint });
+      // Sales are untouched by tips.
+      expect(report.sales.gross).toBe(2100);
+      expect(report.tips).toEqual({
+        total: 10.5,
+        count: 3,
+        byMethod: [
+          { method: 'CARD', amount: 8, count: 2 },
+          { method: 'CASH', amount: 2.5, count: 1 },
+        ],
+        byWaiter: [
+          { userId: 2, name: 'Ben', amount: 7.5, count: 2 },
+          { userId: 3, name: 'Cara', amount: 3, count: 1 },
+        ],
+      });
+      const sum = (rows: Array<{ amount: number }>) =>
+        Math.round(rows.reduce((a, r) => a + r.amount, 0) * 100) / 100;
+      expect(sum(report.tips!.byMethod)).toBe(report.tips!.total);
+      expect(sum(report.tips!.byWaiter)).toBe(report.tips!.total);
+      expect(report.cash.tips).toBe(2.5);
+      // 10000 + 900 sales + 2.5 cash tips + 2000 - 500.
+      expect(report.cash.expected).toBe(12_402.5);
+    } finally {
+      h.tipPayments = [];
+    }
+  });
+
   it('states the day: sales, payments, VAT, fiskalizimi, corrections and the drawer', async () => {
     const { report } = await issueZReport({ actorUserId: 1, print: noPrint });
     expect(report.number).toBe(1);
@@ -185,6 +233,7 @@ describe('Z report', () => {
       currency: 'ALL',
       opening: 10_000,
       sales: 900,
+      tips: 0,
       // The cancelled sale in the fixture has no payment method on record.
       refunds: 0,
       deposits: 2000,

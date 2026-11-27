@@ -283,7 +283,7 @@ export const coreServices = {
     if (input?.privacy)
       merged.privacy = { ...(current.privacy || {}), ...input.privacy };
     if (input?.kds) merged.kds = { ...(current.kds || {}), ...input.kds };
-    if (input?.preferences)
+    if (input?.preferences) {
       merged.preferences = {
         ...(current.preferences || {}),
         ...input.preferences,
@@ -310,6 +310,12 @@ export const coreServices = {
           ...((input.preferences as any)?.overdueTables || {}),
         },
       };
+      // `serviceCharge: null` removes it. Merging used to ignore the null,
+      // so it could only be switched off, never cleared.
+      if ((input.preferences as any)?.serviceCharge === null) {
+        delete (merged.preferences as any).serviceCharge;
+      }
+    }
     if (input?.fiscal) {
       merged.fiscal = { ...(current.fiscal || {}), ...input.fiscal };
       if (tokenEnvironment !== undefined) {

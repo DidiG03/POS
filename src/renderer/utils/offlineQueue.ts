@@ -785,6 +785,95 @@ export function countQueuedActions(
 }
 
 /** The tables a queued write touches, as `area\u0001label` keys. */
+/**
+ * What the screens must hear after queued writes reached the till.
+ *
+ * A replayed order opens its table on the till, but the phone learned that
+ * only from its next floor poll, so the table read as closed and the bill
+ * as empty for 40-70 s although the till had the items. Each replayed
+ * write now announces its table: an order or a table open as open (and
+ * its tickets changed), anything else as tickets changed. Payments leave
+ * the open state to the till's own event: one may close the table or not.
+ */
+export function replayedTableEvents(
+  items: Array<{ op: OfflineOp; args?: any }>,
+): Array<
+  | {
+      name: 'pos:tablesChanged';
+      detail: { area: string; label: string; open: boolean };
+    }
+  | { name: 'pos:ticketsChanged'; detail: { area: string; tableLabel: string } }
+> {
+  const out: ReturnType<typeof replayedTableEvents> = [];
+  const seen = new Set<string>();
+  for (const it of items) {
+    const a = it.args || {};
+    const opensTable =
+      it.op === 'tickets.log' ||
+      (it.op === 'tables.setOpen' && a.open === true);
+    for (const key of queuedItemTables(it)) {
+      const [area, label] = key.split('\u0001');
+      if (opensTable && !seen.has(`open:${key}`)) {
+        seen.add(`open:${key}`);
+        out.push({
+          name: 'pos:tablesChanged',
+          detail: { area, label, open: true },
+        });
+      }
+      if (!seen.has(`tickets:${key}`)) {
+        seen.add(`tickets:${key}`);
+        out.push({
+          name: 'pos:ticketsChanged',
+          detail: { area, tableLabel: label },
+        });
+      }
+    }
+  }
+  return out;
+}
+
+/** Tables whose queued writes were just replayed, and when. */
+const recentlyReplayed = new Map<string, number>();
+export const REPLAY_SETTLE_MS = 10_000;
+
+/**
+ * True for a few seconds after a queued write for this table reached the
+ * till: a bill read that comes back empty then is not to be believed.
+ */
+export function tableRecentlyReplayed(
+  area: string,
+  label: string,
+  now = Date.now(),
+): boolean {
+  const at = recentlyReplayed.get(`${area}\u0001${label}`);
+  return at != null && now - at < REPLAY_SETTLE_MS;
+}
+
+export function noteReplayed(
+  items: Array<{ op: OfflineOp; args?: any }>,
+  now = Date.now(),
+): void {
+  for (const [k, at] of recentlyReplayed) {
+    if (now - at >= REPLAY_SETTLE_MS) recentlyReplayed.delete(k);
+  }
+  for (const it of items) {
+    if (!ORDERED_OPS.has(it.op)) continue;
+    for (const key of queuedItemTables(it)) recentlyReplayed.set(key, now);
+  }
+}
+
+function broadcastReplayed(items: Array<{ op: OfflineOp; args?: any }>) {
+  noteReplayed(items);
+  if (!items.length || typeof window === 'undefined') return;
+  for (const ev of replayedTableEvents(items)) {
+    try {
+      window.dispatchEvent(new CustomEvent(ev.name, { detail: ev.detail }));
+    } catch {
+      // the next floor poll still catches up
+    }
+  }
+}
+
 export function queuedItemTables(item: {
   op: OfflineOp;
   args?: any;
@@ -1158,6 +1247,7 @@ class OfflineQueue {
       // atomically in `commitSync`, which re-reads under the lock and
       // preserves any items added while the network calls were in flight.
       const removedIds = new Set<string>();
+      const replayed: OfflineQueueItem[] = [];
       const updates = new Map<
         string,
         { attempts: number; nextAttemptAt: number; lastError?: string }
@@ -1213,6 +1303,7 @@ class OfflineQueue {
             dispatcher(args, { attempt: (it.attempts || 0) + 1 }),
           );
           removedIds.add(it.id);
+          replayed.push(it);
           sent += 1;
           touched = true;
         } catch (e: any) {
@@ -1285,6 +1376,9 @@ class OfflineQueue {
       if (touched) {
         await this.commitSync(removedIds, updates);
       }
+      // The till has these now: have the open screens read them at once
+      // instead of on the next floor poll (an empty bill for up to a minute).
+      broadcastReplayed(replayed);
       const leftover = (await this.getAll())
         .map(this.normalize)
         .filter((it): it is OfflineQueueItem => it !== null);

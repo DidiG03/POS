@@ -72,6 +72,7 @@ vi.mock('./easypos', async (importActual) => {
 });
 
 import { fiscalizePaymentOnce } from './index';
+import { TILL_BUSY_MESSAGE } from '@shared/staffError';
 import { abandonUnsentFiscalClaim, readFiscalClaim } from './claims';
 
 const KEY = 'pay-42';
@@ -110,6 +111,40 @@ beforeEach(() => {
 });
 
 describe('fiscalizePaymentOnce', () => {
+  it('a stalled ledger answers "the till is busy", files nothing, and the retry files once', async () => {
+    const { prisma } = await import('@db/client');
+    const create = (prisma as any).syncState.create;
+    const stall: any = new Error(
+      'Invalid `prisma.syncState.create()` invocation: Socket timeout (the database failed to respond to a query within the configured timeout)',
+    );
+    stall.name = 'PrismaClientUnknownRequestError';
+    create.mockRejectedValueOnce(stall);
+    const first = await fiscalizePaymentOnce(payment(), settings, {
+      idempotencyKey: KEY,
+    });
+    expect(first.kind).toBe('retryable');
+    if (first.kind !== 'retryable') return;
+    expect(first.message).toBe(TILL_BUSY_MESSAGE);
+    expect(first.message).not.toMatch(/prisma|invocation|socket/i);
+    expect(createSale).not.toHaveBeenCalled();
+
+    createSale.mockResolvedValue({
+      nslf: 'IIC1',
+      nivf: 'FIC1',
+      status: 'accepted',
+    });
+    const retry = await fiscalizePaymentOnce(payment(), settings, {
+      idempotencyKey: KEY,
+    });
+    expect(retry.kind).toBe('ok');
+    const again = await fiscalizePaymentOnce(payment(), settings, {
+      idempotencyKey: KEY,
+    });
+    expect(again.kind).toBe('ok');
+    // One invoice for the key, however many attempts.
+    expect(createSale).toHaveBeenCalledTimes(1);
+  });
+
   it('leaves non-payment tickets alone', async () => {
     const out = await fiscalizePaymentOnce(
       payment({ meta: { kind: 'ORDER' } }),

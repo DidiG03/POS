@@ -92,3 +92,18 @@ describe('healthWarningsToNotify', () => {
     ).toEqual(['clock']);
   });
 });
+
+describe('fiscal reviews on the till-health banner', () => {
+  it('warns while invoices wait for review, and not otherwise', () => {
+    const base = {
+      nowMs: Date.now(),
+      freeBytes: null,
+      savedElsewhereAt: new Date().toISOString(),
+      clockOffsetMs: null,
+    };
+    expect(tillHealthWarnings({ ...base, fiscalReviews: 0 })).toEqual([]);
+    const [w] = tillHealthWarnings({ ...base, fiscalReviews: 1 });
+    expect(w).toMatchObject({ kind: 'fiscal', level: 'danger' });
+    expect(w.message).toMatch(/1 sale has no tax invoice/);
+  });
+});

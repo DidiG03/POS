@@ -294,6 +294,27 @@ describe('failures that must not be retried', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it('stops at a 400 the tax service tagged env:SERVER (the cash cap)', async () => {
+    fetchMock.mockResolvedValue(
+      json(400, {
+        error: {
+          cisError: {
+            faultEnv: 'env:Server',
+            faultString:
+              'Totali nuk mund të jetë më shumë se 500000.00 ALL për faturat me para në dorë.',
+          },
+        },
+      }),
+    );
+    const out = await registerInvoiceWithRecovery(settings, request, fast);
+
+    expect(out.kind).toBe('rejected');
+    if (out.kind !== 'rejected') throw new Error('unreachable');
+    expect(out.message).toMatch(/500,000 ALL in cash/);
+    // Refused: sent once, never polled or replayed.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it('recovers a cisError env:SERVER through the status route', async () => {
     fetchMock
       .mockResolvedValueOnce(

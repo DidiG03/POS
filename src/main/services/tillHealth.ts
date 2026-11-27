@@ -9,7 +9,7 @@
  */
 import fs from 'node:fs';
 
-export type TillHealthKind = 'disk' | 'backup' | 'clock';
+export type TillHealthKind = 'disk' | 'backup' | 'clock' | 'fiscal';
 export interface TillHealthWarning {
   kind: TillHealthKind;
   level: 'warn' | 'danger';
@@ -37,6 +37,8 @@ export function tillHealthWarnings(input: {
   installedAt?: string | null;
   /** This till's clock minus the tax service's; null when not known. */
   clockOffsetMs: number | null;
+  /** Invoices on the fiscal review list (refused or unconfirmed). */
+  fiscalReviews?: number;
 }): TillHealthWarning[] {
   const out: TillHealthWarning[] = [];
   if (input.freeBytes != null && input.freeBytes < DISK_WARN_BYTES) {
@@ -84,6 +86,18 @@ export function tillHealthWarnings(input: {
       message: `The till's clock is ${minutes} minutes ${
         input.clockOffsetMs > 0 ? 'fast' : 'slow'
       }. Receipts and reports use it: set the time on that computer.`,
+    });
+  }
+  const reviews = Number(input.fiscalReviews || 0);
+  if (reviews > 0) {
+    out.push({
+      kind: 'fiscal',
+      level: 'danger',
+      message: `${reviews} ${
+        reviews === 1 ? 'sale has' : 'sales have'
+      } no tax invoice yet: the tax service refused or did not confirm ${
+        reviews === 1 ? 'it' : 'them'
+      }. Open Settings › Fiskalizimi › Reviews to see why and send again.`,
     });
   }
   return out;

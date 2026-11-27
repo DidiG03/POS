@@ -106,6 +106,7 @@ import {
   listFiscalClaimsNeedingReview,
   notifyFiscalReviewNeeded,
   pruneFiscalClaims,
+  claimMayBePruned,
   readFiscalClaim,
   resolveFiscalClaim,
   commitDeferredFiscalClaim,
@@ -569,6 +570,97 @@ describe('pruneFiscalClaims', () => {
     await pruneFiscalClaims({ force: true });
 
     expect(await readFiscalClaim(KEY)).toBeNull();
+  });
+});
+
+describe('claimMayBePruned', () => {
+  const H = 60 * 60 * 1000;
+  const now = 1_000 * 24 * H;
+  const rec = (state: string, extra: Record<string, unknown> = {}) =>
+    ({
+      state,
+      attemptId: 'a',
+      attempts: 1,
+      createdAt: '',
+      updatedAt: '',
+      ...extra,
+    }) as any;
+
+  it('drops a filed claim 48 h after its sale was saved, not before', () => {
+    const r = rec('REGISTERED', { context: { saleKey: 'k' } });
+    expect(
+      claimMayBePruned({
+        record: r,
+        updatedAtMs: now - 49 * H,
+        now,
+        saleSaved: true,
+      }),
+    ).toBe(true);
+    expect(
+      claimMayBePruned({
+        record: r,
+        updatedAtMs: now - 47 * H,
+        now,
+        saleSaved: true,
+      }),
+    ).toBe(false);
+    // Sale not known to be saved: kept for the full 90 days.
+    expect(
+      claimMayBePruned({
+        record: r,
+        updatedAtMs: now - 49 * H,
+        now,
+        saleSaved: false,
+      }),
+    ).toBe(false);
+  });
+
+  it('drops refused or withdrawn claims after a week', () => {
+    for (const state of ['FAILED', 'ABANDONED']) {
+      expect(
+        claimMayBePruned({
+          record: rec(state),
+          updatedAtMs: now - 8 * 24 * H,
+          now,
+          saleSaved: false,
+        }),
+      ).toBe(true);
+      expect(
+        claimMayBePruned({
+          record: rec(state),
+          updatedAtMs: now - 6 * 24 * H,
+          now,
+          saleSaved: false,
+        }),
+      ).toBe(false);
+    }
+  });
+
+  it('never drops work in flight, queued, for review, or an unmatched invoice', () => {
+    const old = now - 500 * 24 * H;
+    for (const state of [
+      'PENDING',
+      'DEFERRED',
+      'UNKNOWN',
+      'CORRECTION_REQUIRED',
+    ]) {
+      expect(
+        claimMayBePruned({
+          record: rec(state),
+          updatedAtMs: old,
+          now,
+          saleSaved: true,
+        }),
+      ).toBe(false);
+    }
+    expect(
+      claimMayBePruned({
+        record: rec('REGISTERED', { orphanDetectedAt: 'x' }),
+        updatedAtMs: old,
+        now,
+        saleSaved: true,
+      }),
+    ).toBe(false);
   });
 });
 

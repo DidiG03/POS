@@ -204,4 +204,40 @@ describe('settings', () => {
     });
     vi.doUnmock('@db/client');
   });
+
+  it('clears the service charge when it is saved as null', async () => {
+    vi.resetModules();
+    let stored: any = {
+      preferences: {
+        serviceCharge: { enabled: true, mode: 'PERCENT', value: 10 },
+        autoCloseShift: { enabled: true },
+      },
+    };
+    vi.doMock('@db/client', () => ({
+      prisma: {
+        syncState: {
+          findUnique: vi.fn(async () => ({ valueJson: stored })),
+          upsert: vi.fn(async (args: any) => {
+            stored = args.update.valueJson;
+            return {};
+          }),
+        },
+      },
+    }));
+    const { coreServices: core } = await import('./core');
+    // One field still merges as before...
+    await core.updateSettings({
+      preferences: { serviceCharge: { value: 12 } },
+    } as any);
+    expect(stored.preferences.serviceCharge).toEqual({
+      enabled: true,
+      mode: 'PERCENT',
+      value: 12,
+    });
+    // ...and null removes it, leaving the other preferences alone.
+    await core.updateSettings({ preferences: { serviceCharge: null } } as any);
+    expect('serviceCharge' in stored.preferences).toBe(false);
+    expect(stored.preferences.autoCloseShift).toEqual({ enabled: true });
+    vi.doUnmock('@db/client');
+  });
 });

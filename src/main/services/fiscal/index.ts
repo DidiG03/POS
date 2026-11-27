@@ -1,3 +1,8 @@
+import {
+  isDatabaseError,
+  staffSafeMessage,
+  TILL_BUSY_MESSAGE,
+} from '@shared/staffError';
 import type { SettingsDTO } from '@shared/ipc';
 import type { TicketPrintPayload } from '../../print';
 import {
@@ -547,11 +552,18 @@ async function registerUnderClaim(input: {
     });
   } catch (e: any) {
     // No durable claim means nothing would stop a retry from filing a
-    // second invoice, so refuse rather than register unprotected.
+    // second invoice, so refuse rather than register unprotected. The
+    // ledger being busy is said in words a waiter can act on; the ORM's
+    // text goes to the log only (`@shared/staffError`).
+    if (isDatabaseError(e)) {
+      console.warn('[fiscal] claim not recorded, the ledger is busy:', e);
+      return { kind: 'retryable', message: TILL_BUSY_MESSAGE };
+    }
     return {
       kind: 'retryable',
-      message: `Could not record the fiscal claim, so the invoice was not sent: ${String(
-        e?.message || e,
+      message: `Could not record the fiscal claim, so the invoice was not sent: ${staffSafeMessage(
+        e,
+        { payment: true },
       )}`,
     };
   }

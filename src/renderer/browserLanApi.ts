@@ -3,6 +3,7 @@
  * Electron preload already defines `window.api`; this module is loaded only
  * when that bridge is missing so the PIN screen does not download it.
  */
+import { staffSafeMessage } from '@shared/staffError';
 import {
   getHttpBase,
   getHttpsBase,
@@ -20,6 +21,7 @@ import {
   readRetryAttempts,
   setPreferredScheme,
   isHostUnreachable,
+  heartbeatTimeoutMs,
 } from './utils/netQuality';
 import {
   POS_CACHE,
@@ -848,12 +850,24 @@ export function installBrowserLanApi(): void {
       if (!ct.includes('application/json')) return {};
       const body: any = await r.json().catch(() => null);
       if (!body || typeof body !== 'object') return {};
-      const message =
+      const raw =
         typeof body.error === 'string'
           ? body.error
           : typeof body.message === 'string'
             ? body.message
             : undefined;
+      // Never the till's internals on a phone (`@shared/staffError`).
+      const message =
+        raw == null
+          ? undefined
+          : staffSafeMessage(raw, {
+              payment: r.url.includes('/print/ticket'),
+            });
+      if (message !== raw) {
+        if (typeof body.error === 'string') body.error = message;
+        if (typeof body.message === 'string') body.message = message;
+        if (!body.code) body.code = 'TILL_BUSY';
+      }
       const code = typeof body.code === 'string' ? body.code : undefined;
       const permanent = body.permanent === true ? true : undefined;
       return { message, code, permanent, body };
@@ -930,8 +944,9 @@ export function installBrowserLanApi(): void {
     if (pathname === '/auth/login' || pathname === '/pairing/verify') {
       return IS_NATIVE_SHELL ? 12_000 : 6_000;
     }
-    // Heartbeat: a till that does not answer in 3 s counts as a miss.
-    if (pathname === '/health') return 3_000;
+    // Heartbeat: 3 s on a good link, longer on a slow one, so a slow
+    // answer is not a miss (`heartbeatTimeoutMs`).
+    if (pathname === '/health') return heartbeatTimeoutMs();
     if (VAULT_MAINTENANCE_PATHS.has(pathname)) {
       // Rebuilding the ledger copies every row; a busy till takes a while.
       return 180_000;
@@ -1556,16 +1571,18 @@ export function installBrowserLanApi(): void {
         const dateIso = encodeURIComponent(String(input?.dateIso || ''));
         return await goLan(`/tickets/paid-tables?dateIso=${dateIso}`);
       },
-      async preparePayment() {
-        // Best-effort hint; a till without the route answers 404.
+      async preparePayment(input?: unknown) {
+        // Best-effort hint; a till without the route answers 404. The
+        // answer carries the cash cap (`@shared/cashLimit`).
         try {
-          await goLan('/tickets/prepare-payment', {
+          const r = await goLan('/tickets/prepare-payment', {
             method: 'POST',
-            body: '{}',
+            body: JSON.stringify(input ?? {}),
           });
-          return true;
-        } catch {
-          return false;
+          return r && typeof r === 'object' ? r : true;
+        } catch (e: any) {
+          const body = e?.body ?? e?.data;
+          return body && typeof body === 'object' ? body : false;
         }
       },
       async print(input: any) {

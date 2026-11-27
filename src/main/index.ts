@@ -53,6 +53,14 @@ import { checkPaymentLines } from './services/paymentLines';
 import { noticeShortPin } from './services/shortPinNotice';
 import { crashReportsAllowed } from '@shared/crashReportScrub';
 import { INVALID_SPLIT, normalizePaymentSplit } from '@shared/paymentSplits';
+import { checkCashLimit, preparePaymentAnswer } from '@shared/cashLimit';
+import { INVALID_TIP, normalizeTip } from '@shared/tips';
+import {
+  isDatabaseError,
+  staffSafeMessage,
+  TILL_BUSY,
+  TILL_BUSY_MESSAGE,
+} from '@shared/staffError';
 import {
   CASH_COUNT_REQUIRED,
   cashCountAtClockOut,
@@ -2835,16 +2843,18 @@ ipcHandle('license:createPortalSession', async () => {
 
 // The payment screen opened: open the easyPos connection while the waiter
 // enters the tender, so the invoice does not wait on a TLS handshake.
-ipcHandle('tickets:preparePayment', async () => {
-  void coreServices
-    .readSettings()
-    .then((settings) => warmFiscalConnection(settings as any))
-    .catch(() => undefined);
-  return true;
+ipcHandle('tickets:preparePayment', async (_e, input) => {
+  const settings = await coreServices.readSettings();
+  void warmFiscalConnection(settings as any).catch(() => undefined);
+  return preparePaymentAnswer(settings, input);
 });
 
 // Print ticket over ESC/POS
-ipcHandle('tickets:print', async (_e, input, ctx) => {
+const ticketsPrintHandler = async (
+  _e: any,
+  input: any,
+  ctx: any,
+): Promise<any> => {
   const idempotencyKey = String((input as any)?.idempotencyKey ?? '').trim();
   if (idempotencyKey) {
     const existing = await prisma.printJob
@@ -3091,6 +3101,20 @@ ipcHandle('tickets:print', async (_e, input, ctx) => {
         } as any;
       }
       payload = { ...payload, meta: splitOk.meta };
+      // The tip: on the payment, never in the sale (`@shared/tips`).
+      const tipOk = normalizeTip(payload.meta || {});
+      if (!tipOk.ok) {
+        return {
+          ok: false,
+          code: INVALID_TIP,
+          error: tipOk.error,
+          permanent: true,
+        } as any;
+      }
+      payload = { ...payload, meta: tipOk.meta };
+      // Albania's cash cap, before anything is taken (`@shared/cashLimit`).
+      const cashCap = checkCashLimit(settings, payload.meta);
+      if (!cashCap.ok) return cashCap as any;
       // Key present, every line on the menu or the bill, and a seat's
       // share only for what the bill has (`paymentLines.ts`).
       const linesRefused = await checkPaymentLines({
@@ -3213,10 +3237,13 @@ ipcHandle('tickets:print', async (_e, input, ctx) => {
         }
         // Same shape as the LAN `/print/ticket` 502 so the renderer can
         // keep the table open instead of treating this as a printer hiccup.
+        if (outcome.message === TILL_BUSY_MESSAGE) {
+          return { ok: false, code: TILL_BUSY, error: TILL_BUSY_MESSAGE };
+        }
         return {
           ok: false,
           code: 'FISCAL_FAILED',
-          error: outcome.message,
+          error: staffSafeMessage(outcome.message, { payment: true }),
         };
       }
       payload = outcome.payload;
@@ -3399,6 +3426,17 @@ ipcHandle('tickets:print', async (_e, input, ctx) => {
     return withPaymentLockThen(area, tableLabel, runPrint);
   }
   return finishAfterPaymentLock(await runPrint());
+};
+// A stalled ledger answers "the till is busy" (retryable; the replay is
+// deduped by its key), never the ORM's text (`@shared/staffError`).
+ipcHandle('tickets:print', async (e, input, ctx) => {
+  try {
+    return await ticketsPrintHandler(e, input, ctx);
+  } catch (err) {
+    if (!isDatabaseError(err)) throw err;
+    console.error('[tickets:print] database busy', err);
+    return { ok: false, code: TILL_BUSY, error: TILL_BUSY_MESSAGE };
+  }
 });
 
 // Waiter-facing ticket lists (receipt-style) - Local-first: always use local DB

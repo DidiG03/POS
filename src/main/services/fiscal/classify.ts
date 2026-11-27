@@ -265,11 +265,28 @@ function refusalHint(text: string): string {
   const lower = text.toLowerCase();
   if (
     lower.includes('500000') ||
+    lower.includes('500 000') ||
     (lower.includes('më shumë se') && lower.includes('individ'))
   ) {
-    return 'The law caps one cash-type invoice (cash or card) to a private customer at 500,000 ALL. A larger bill needs an invoice to a business (with its NIPT), issued in easyPos.';
+    return 'In plain words: Albania does not allow more than 500,000 ALL in cash for one sale. The sale is recorded and the invoice is on the review list; it needs a card payment or an invoice issued in easyPos.';
+  }
+  if (lower.includes('100000') || lower.includes('100 000')) {
+    return 'In plain words: Albania does not allow more than 100,000 ALL in cash for one sale to a business. The sale is recorded and the invoice is on the review list; it needs a card payment or an invoice issued in easyPos.';
   }
   return '';
+}
+
+/**
+ * A 4xx that answers the request: easyPos read it and refused it. Not
+ * 401/403 (credentials, handled first), 404 (wrong address), 408 (the
+ * request may not have been read), 409 (in flight) or 429 (rate limit).
+ */
+export function isAnsweredRefusal(httpStatus: number): boolean {
+  return (
+    httpStatus >= 400 &&
+    httpStatus < 500 &&
+    ![401, 403, 404, 408, 409, 429].includes(httpStatus)
+  );
 }
 
 export function isValidationFailure(input: {
@@ -430,6 +447,24 @@ export function classifyFiscalAttempt(
       message: `Today's opening cash balance has not been declared, so the tax service refused this cash invoice (${
         faultMessage(data) || 'fault 123'
       }).`,
+    };
+  }
+
+  // An answered 4xx is a refusal, whatever the CIS fault says about whose
+  // side it is on. The tax service tags business rules (the 500,000 ALL
+  // cash cap among them) as env:Server, and reading that as "may have been
+  // filed" sent the invoice round status → resend → the same 400 until it
+  // was queued as an outage: retried for ever, never on the review list.
+  if (isAnsweredRefusal(httpStatus)) {
+    const fault = faultMessage(data);
+    return {
+      action: 'fix-request',
+      outcome: 'not-registered',
+      retryable: false,
+      mustCheckStatus: false,
+      message: `easyPos refused the invoice (HTTP ${httpStatus}): ${
+        fault || 'no detail supplied'
+      }. ${refusalHint(fault) || 'A byte-identical retry will be refused the same way.'}`,
     };
   }
 

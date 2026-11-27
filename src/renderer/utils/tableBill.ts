@@ -17,6 +17,8 @@ export type HostBillDecision =
   | { kind: 'unreadable'; offline?: boolean }
   | { kind: 'hydrate'; items: TicketReadItems; note: string }
   | { kind: 'keep' }
+  /** Not on the till yet; read again shortly (`pendingSend`). */
+  | { kind: 'updating' }
   | { kind: 'voided'; items: TicketReadItems; note: string }
   | { kind: 'empty'; note: string };
 
@@ -90,6 +92,11 @@ export function decideHostBill(opts: {
   withinPostSendGrace: boolean;
   /** {@link peekTableBillTotal} — the floor's running total for this sitting. */
   expectedTotal?: number | null;
+  /**
+   * An order for this table is still queued on this device, or was just
+   * replayed. An empty read then means "not there yet", never "empty".
+   */
+  pendingSend?: boolean;
 }): HostBillDecision {
   if (!opts.read.ok) {
     return opts.read.offline
@@ -114,6 +121,11 @@ export function decideHostBill(opts: {
   }
   if (opts.withinPostSendGrace) {
     return { kind: 'keep' };
+  }
+  // A queued or just-replayed order the till does not show yet: say
+  // "Updating…" and read again, rather than paint a 0.00 bill over it.
+  if (opts.pendingSend) {
+    return { kind: 'updating' };
   }
   if (opts.suppressClose) {
     return { kind: 'keep' };

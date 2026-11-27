@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   isHostUnreachable,
+  tillLooksDown,
   isLinkDegraded,
   lanBases,
   pollIntervalMs,
@@ -48,5 +49,27 @@ describe('netQuality', () => {
     recordSuccess(40);
     expect(isLinkDegraded()).toBe(false);
     expect(isHostUnreachable()).toBe(false);
+  });
+});
+
+describe('the "Cannot reach the till" banner', () => {
+  it('stays off on a slow link while requests still get through', () => {
+    const now = 1_000_000;
+    // Two lost pings, but something answered 5 s ago.
+    expect(tillLooksDown({ misses: 2, now, lastSuccessAt: now - 5_000 })).toBe(
+      false,
+    );
+    expect(tillLooksDown({ misses: 5, now, lastSuccessAt: now - 5_000 })).toBe(
+      false,
+    );
+  });
+
+  it('comes on after missed pings in a row with nothing answering', () => {
+    const now = 1_000_000;
+    expect(tillLooksDown({ misses: 3, now, lastSuccessAt: now - 20_000 })).toBe(
+      true,
+    );
+    expect(tillLooksDown({ misses: 3, now, lastSuccessAt: 0 })).toBe(true);
+    expect(tillLooksDown({ misses: 2, now, lastSuccessAt: 0 })).toBe(false);
   });
 });
