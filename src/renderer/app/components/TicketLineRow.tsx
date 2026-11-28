@@ -1,7 +1,51 @@
-import { memo } from 'react';
+import { memo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { IconClose, IconEdit, IconTrash } from '../../components/icons';
 import type { TicketLine } from '../../stores/ticket';
+import { LINE_STATE_LOOK, type LineSendState } from '../../utils/lineSendState';
+
+const TONE: Record<string, string> = {
+  muted: 'text-[color:var(--pos-fg-muted)]',
+  amber: 'text-amber-300',
+  sky: 'text-sky-300',
+  green: 'text-emerald-300',
+};
+
+/** Icon and word for the line's state; tap for what it means. */
+const LineStateChip = memo(function LineStateChip({
+  state,
+}: {
+  state: LineSendState;
+}) {
+  const { t } = useTranslation();
+  const [open, setOpen] = useState(false);
+  const look = LINE_STATE_LOOK[state];
+  return (
+    <span className="ml-2 inline-flex flex-col align-middle">
+      <button
+        type="button"
+        data-testid="line-state"
+        data-state={state}
+        className={`inline-flex items-center gap-1 text-[11px] font-semibold uppercase tracking-wide ${TONE[look.tone]}`}
+        aria-expanded={open}
+        onClick={(e) => {
+          e.stopPropagation();
+          setOpen((v) => !v);
+        }}
+      >
+        <span aria-hidden className={state === 'SENDING' ? 'animate-spin' : ''}>
+          {look.icon}
+        </span>
+        {t(`order.lineState.${state}`)}
+      </button>
+      {open ? (
+        <span className="mt-0.5 max-w-[16rem] text-[11px] font-normal normal-case tracking-normal text-[color:var(--pos-fg-muted)]">
+          {t(`order.lineStateHelp.${state}`)}
+        </span>
+      ) : null}
+    </span>
+  );
+});
 
 function lineAcceptsComment(
   line: { voided?: boolean; staged?: boolean },
@@ -27,8 +71,11 @@ export const TicketLineRow = memo(function TicketLineRow({
   onRemove,
   onVoid,
   onNoteChange,
+  sendState = null,
 }: {
   line: TicketLine;
+  /** Where this line is: not sent … done in the kitchen (`lineSendState`). */
+  sendState?: LineSendState | null;
   formatAmount: (n: number) => string;
   isTableOpen: boolean;
   showRequestOnly: boolean;
@@ -102,6 +149,8 @@ export const TicketLineRow = memo(function TicketLineRow({
               <span className="ml-2 text-[11px] font-semibold uppercase tracking-wide text-emerald-300">
                 {t('order.seatPaid')}
               </span>
+            ) : sendState && hasTables ? (
+              <LineStateChip state={sendState} />
             ) : isPending ? (
               <span className="ml-2 text-[11px] font-semibold uppercase tracking-wide text-amber-300">
                 {t('order.linePending')}

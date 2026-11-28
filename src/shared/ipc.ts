@@ -59,7 +59,15 @@ export interface SettingsDTO {
     phone?: string;
     email?: string;
     website?: string;
+    /** Set in the setup wizard: the fiscal rules that apply. */
+    country?: 'AL' | 'UK';
+    /** NIPT (Albania) or VAT number (UK). */
+    taxId?: string;
   };
+  /** Setup wizard progress (`@shared/setupWizard`). */
+  setupWizard?: Record<string, unknown>;
+  /** When the setup wizard's easyPos DEMO test last succeeded. */
+  setupFiscalTestedAt?: string;
   currency: string;
   defaultVatRate: number;
   preferences?: {
@@ -968,6 +976,14 @@ export interface Api {
   tables: ApiTables;
   requests: ApiRequests;
   network: ApiNetwork;
+  /** Header status lights (`@shared/statusLights`). */
+  status?: {
+    lights(): Promise<{
+      lights: import('./statusLights').StatusLight[];
+      reviews: number;
+      at: string;
+    }>;
+  };
   updater: ApiUpdater;
   /** Present on the Admin LAN client so Settings → Updates can push POS/KDS. */
   hostUpdates?: ApiHostUpdates;
@@ -1919,6 +1935,11 @@ export interface ApiTickets {
     }[];
     note?: string | null;
   }): Promise<boolean>;
+  /** Per bill line id: on the kitchen display, or done (`lineKitchenStatus`). */
+  lineStatus?(
+    area: string,
+    tableLabel: string,
+  ): Promise<Record<string, 'IN_KITCHEN' | 'DONE'>>;
   getLatestForTable(
     area: string,
     tableLabel: string,

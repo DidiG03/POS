@@ -190,6 +190,7 @@ export const LAN_ROUTE_POLICIES: Readonly<Record<string, LanRoutePolicy>> = {
   'POST /fiscal/cash-declaration': { allow: ADMIN },
   'POST /settings/fiscal-test-minimal': { allow: ADMIN },
   'GET /settings/fiscal-reviews': { allow: ADMIN },
+  'GET /status/lights': { allow: POS },
   'POST /settings/fiscal-reviews': { allow: ADMIN },
 
   // ---------------------------------------------------------------- layout
@@ -252,6 +253,7 @@ export const LAN_ROUTE_POLICIES: Readonly<Record<string, LanRoutePolicy>> = {
   // --------------------------------------------------------------- tickets
   'POST /tickets': { allow: POS },
   'GET /tickets/latest': { allow: POS },
+  'GET /tickets/line-status': { allow: POS },
   'GET /tickets/tooltip': { allow: POS_AND_HOST },
   'GET /tickets/paid-tables': { allow: POS_AND_HOST },
   'POST /tickets/void-item': { allow: POS },

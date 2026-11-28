@@ -56,6 +56,7 @@ import { INVALID_SPLIT, normalizePaymentSplit } from '@shared/paymentSplits';
 import { checkCashLimit, preparePaymentAnswer } from '@shared/cashLimit';
 import { INVALID_TIP, normalizeTip } from '@shared/tips';
 import { withCashTender } from '@shared/cashTender';
+import { noteDatabaseBusy } from './services/dbBusy';
 import {
   isDatabaseError,
   staffSafeMessage,
@@ -2573,6 +2574,11 @@ ipcHandle('settings:testFiscalMinimalInvoice', async () => {
  * that may or may not already exist at the tax service, so it is held out
  * of the retry loop until an admin has checked easyPos.
  */
+ipcHandle('status:lights', async () => {
+  const { readStatusLights } = await import('./services/statusLightsRead');
+  return readStatusLights();
+});
+
 ipcHandle('settings:listFiscalReviews', async () => {
   return listFiscalReviewsForAdmin();
 });
@@ -2585,6 +2591,8 @@ ipcHandle('settings:resolveFiscalReview', async (_e, payload) => {
       userId: getSession(_e.sender.id)?.userId,
       idempotencyKey: String((payload as any)?.idempotencyKey || ''),
       resolution: String((payload as any)?.resolution || ''),
+      // What the person found and did (the guided fix asks for it).
+      note: String((payload as any)?.note || '').slice(0, 500) || undefined,
     });
   }
   return result;
@@ -3465,6 +3473,7 @@ ipcHandle('tickets:print', async (e, input, ctx) => {
     return await ticketsPrintHandler(e, input, ctx);
   } catch (err) {
     if (!isDatabaseError(err)) throw err;
+    noteDatabaseBusy();
     console.error('[tickets:print] database busy', err);
     return { ok: false, code: TILL_BUSY, error: TILL_BUSY_MESSAGE };
   }
@@ -4059,6 +4068,16 @@ ipcHandle('tickets:log', async (_e, payload, ctx) => {
     );
     throw error; // Re-throw to maintain existing error handling behavior
   }
+});
+
+ipcHandle('tickets:lineStatus', async (_e, input) => {
+  const { kitchenStatusForTable } = await import(
+    './services/lineKitchenStatus'
+  );
+  return kitchenStatusForTable(
+    String(input?.area || ''),
+    String(input?.tableLabel || ''),
+  );
 });
 
 ipcHandle('tickets:getLatestForTable', async (_e, input) => {

@@ -157,6 +157,7 @@ import { noticeShortPin } from './services/shortPinNotice';
 import { INVALID_SPLIT, normalizePaymentSplit } from '@shared/paymentSplits';
 import { checkCashLimit, preparePaymentAnswer } from '@shared/cashLimit';
 import { noteClientVersion } from './services/clientVersions';
+import { noteDatabaseBusy } from './services/dbBusy';
 import {
   paymentReceiptPrints,
   voidTicketWithoutBill,
@@ -2408,6 +2409,21 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           corsOrigin,
         );
       }
+      if (req.method === 'GET' && pathname === '/tickets/line-status') {
+        // Where each sent line is in the kitchen (`lineKitchenStatus.ts`).
+        const { kitchenStatusForTable } = await import(
+          './services/lineKitchenStatus'
+        );
+        return send(
+          res,
+          200,
+          await kitchenStatusForTable(
+            String(parsed.query.area || ''),
+            String(parsed.query.table || ''),
+          ),
+          corsOrigin,
+        );
+      }
       if (req.method === 'GET' && pathname === '/tickets/latest') {
         const area = String(parsed.query.area || '');
         const tableLabel = String(parsed.query.table || '');
@@ -2951,6 +2967,13 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
           corsOrigin,
         );
       }
+      if (req.method === 'GET' && pathname === '/status/lights') {
+        // Header status lights (`statusLightsRead.ts`).
+        const { readStatusLights } = await import(
+          './services/statusLightsRead'
+        );
+        return send(res, 200, await readStatusLights(), corsOrigin);
+      }
       if (req.method === 'GET' && pathname === '/settings/fiscal-reviews') {
         return send(res, 200, await listFiscalReviewsForAdmin(), corsOrigin);
       }
@@ -2962,6 +2985,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
             userId: auth?.userId,
             idempotencyKey: String(body?.idempotencyKey || ''),
             resolution: String(body?.resolution || ''),
+            note: String(body?.note || '').slice(0, 500) || undefined,
           });
         }
         return send(res, 200, result, corsOrigin);
@@ -5718,6 +5742,7 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
       // The ledger is busy or stalled: retryable, in words staff can read;
       // never the ORM's text (`@shared/staffError`).
       if (isDatabaseError(e)) {
+        noteDatabaseBusy();
         console.error('API error (database busy)', e);
         const pay = String(req.url || '').startsWith('/print/ticket');
         const message = pay ? TILL_BUSY_MESSAGE : TILL_BUSY_MESSAGE_GENERIC;

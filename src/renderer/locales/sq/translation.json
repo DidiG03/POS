@@ -1421,7 +1421,23 @@
     "tipInvalid": "Kontrolloni bakshishin",
     "payingSlow": "Arka po vonon më shumë se zakonisht. Asgjë nuk paguhet dy herë: nëse nuk përfundon, pagesa dërgohet përsëri me të njëjtin kod.",
     "splitBillInfo": "Merret një pagesë për gjithë faturën. Për ta marrë pjesën e secilit veç, paguani sipas vendit.",
-    "payTipPart": "(me bakshish {{tip}})"
+    "payTipPart": "(me bakshish {{tip}})",
+    "lineState": {
+      "NOT_SENT": "Pa dërguar",
+      "QUEUED": "Ruajtur, në pritje",
+      "SENDING": "Po dërgohet",
+      "SENT": "Dërguar",
+      "IN_KITCHEN": "Në kuzhinë",
+      "DONE": "Gati"
+    },
+    "lineStateHelp": {
+      "NOT_SENT": "Vetëm në këtë telefon. Shtypni Dërgo për ta dërguar në arkë.",
+      "QUEUED": "Arka nuk u arrit, ndaj është ruajtur në këtë telefon. Dërgohet vetë një herë kur arka përgjigjet.",
+      "SENDING": "Po shkon në arkë.",
+      "SENT": "Arka e ka.",
+      "IN_KITCHEN": "Në ekranin e kuzhinës.",
+      "DONE": "Kuzhina e shënoi gati."
+    }
   },
   "reservations": {
     "timeRequired": "Zgjidhni orën e rezervimit.",
@@ -2126,5 +2142,194 @@
     "help": "Numëroni paratë që keni nga ky turn dhe shkruani totalin. Fleta e turnit e tregon pranë parave që keni marrë.",
     "submit": "Dil nga turni",
     "invalid": "Shkruani një shumë, p.sh. 120 ose 95.50."
+  },
+  "setup": {
+    "title": "Konfiguro OneTap",
+    "intro": "Çdo hap ruhet ndërkohë. Kapërceni një hap dhe kthehuni më vonë; mbyllni dritaren dhe hapet përsëri këtu.",
+    "steps": "Hapat",
+    "step": {
+      "business": "Biznesi",
+      "fiscal": "Fiskalizimi",
+      "printers": "Printerët",
+      "menu": "Menuja",
+      "staff": "Stafi",
+      "devices": "Telefonat & kuzhina",
+      "finish": "Përfundo"
+    },
+    "back": "Mbrapa",
+    "skip": "Kapërce tani",
+    "later": "Përfundo më vonë",
+    "continue": "Vazhdo",
+    "saveContinue": "Ruaj dhe vazhdo",
+    "saveFailed": "Nuk u ruajt. Kontrolloni që arka është ndezur dhe provoni përsëri.",
+    "reopen": "Magjistari i konfigurimit",
+    "business": {
+      "name": "Emri i biznesit (në fatura)",
+      "address": "Adresa",
+      "country": "Shteti",
+      "albania": "Shqipëri",
+      "uk": "Mbretëria e Bashkuar",
+      "currency": "Monedha",
+      "nipt": "NIPT",
+      "vat": "Numri i TVSH-së (opsional)"
+    },
+    "fiscal": {
+      "notNeeded": "Për një lokal në MB nuk nevojitet fiskalizim. Vazhdoni.",
+      "demoOnly": "Konfigurimi lidhet vetëm me shërbimin DEMO (test) të easyPos, ndaj asgjë nuk dërgohet ende në tatime. Kaloni në shërbimin real te Cilësimet › Fiskalizimi pasi shitjet test funksionojnë.",
+      "address": "Adresa DEMO e easyPos",
+      "token": "Tokeni DEMO",
+      "tokenSaved": "Një token është ruajtur; lëreni bosh për ta mbajtur.",
+      "operator": "Kodi i operatorit",
+      "app": "ID e aplikacionit",
+      "test": "Ruaj dhe testo lidhjen",
+      "testing": "Po testohet…",
+      "ok": "U lidh me easyPos DEMO.",
+      "failed": "Lidhja nuk funksionoi:"
+    },
+    "station": {
+      "RECEIPT": "Faturat",
+      "KITCHEN": "Kuzhina",
+      "BAR": "Bari",
+      "DESSERT": "Ëmbëlsirat"
+    },
+    "printers": {
+      "none": "Pa printer",
+      "test": "Printo provë",
+      "printed": "Prova u dërgua te {{station}}. Kontrolloni që doli.",
+      "testFailed": "Prova nuk u printua.",
+      "add": "Shto printer rrjeti",
+      "scan": "Gjej printerët në Wi-Fi",
+      "scanning": "Po kërkohet…",
+      "noneFound": "Asnjë printer nuk u përgjigj. Shkruani adresën nga faqja e vetë-testit të printerit.",
+      "scanFailed": "Nuk u kërkuan dot printerët.",
+      "name": "Emri",
+      "ip": "Adresa",
+      "port": "Porta",
+      "chooseRole": "Zgjidhni çfarë printon.",
+      "addButton": "Shto printerin"
+    },
+    "menu": {
+      "count": "{{count}} artikuj në menu.",
+      "template": "Shkarko shabllonin CSV",
+      "chooseCsv": "Zgjidh skedarin CSV",
+      "errors": "{{count}} probleme: rregullojini në skedar dhe zgjidheni përsëri. Asgjë nuk u importua.",
+      "ready": "{{count}} artikuj gati për import.",
+      "line": "Rreshti",
+      "column": "Kolona",
+      "problem": "Problemi",
+      "import": "Importo {{count}} artikuj",
+      "importing": "Po importohet…",
+      "imported": "U importuan: {{created}} artikuj të rinj, {{existing}} ekzistonin, {{categories}} kategori të reja.",
+      "someFailed": "{{count}} rreshta dështuan (më poshtë).",
+      "manual": "Ose shtoni një artikull",
+      "category": "Kategoria",
+      "item": "Emri",
+      "add": "Shto artikullin"
+    },
+    "staff": {
+      "name": "Emri",
+      "pinLabel": "PIN",
+      "role": "Roli",
+      "add": "Shto personin",
+      "nameRequired": "Shkruani një emër.",
+      "pin": {
+        "required": "Shkruani një PIN.",
+        "adminDigits": "PIN-i i administratorit ka 6 shifra dhe jo i lehtë si 123456.",
+        "staffFormat": "PIN-i ka 4 deri 6 shifra."
+      }
+    },
+    "role": {
+      "ADMIN": "Administrator",
+      "WAITER": "Kamarier",
+      "CASHIER": "Arkëtar",
+      "BARTENDER": "Banakier",
+      "CHEF": "Kuzhinier"
+    },
+    "devices": {
+      "help": "Telefonat dhe ekranet e kuzhinës lidhen me këtë arkë në Wi-Fi-n e lokalit.",
+      "address": "Adresa e arkës",
+      "noAddress": "jo në rrjet",
+      "code": "Kodi i çiftimit",
+      "makeCode": "Krijo kod çiftimi",
+      "newCode": "Kod i ri",
+      "waiterApp": "Aplikacioni Waiter: hapeni në të njëjtin Wi-Fi, zgjidhni këtë arkë, shkruani kodin.",
+      "kds": "Ekrani i kuzhinës: hapni OneTap KDS, zgjidhni këtë arkë, shkruani kodin."
+    },
+    "ok": "bërë",
+    "missing": "mungon",
+    "fix": "Shko te hapi",
+    "finish": {
+      "next": "Më pas: hyni në arkë si kamarier, hapni një tavolinë dhe dërgoni një porosi provë. Printohet në kuzhinë.",
+      "done": "Përfundo konfigurimin"
+    }
+  },
+  "connection": {
+    "offline": "Pa lidhje: arka nuk arrihet tani.",
+    "offlineSaved_one": "Pa lidhje – {{count}} porosi e ruajtur në këtë telefon, dërgohet vetë",
+    "offlineSaved_other": "Pa lidhje – {{count}} porosi të ruajtura në këtë telefon, dërgohen vetë",
+    "sending_one": "Po dërgohet {{count}} porosi e ruajtur…",
+    "sending_other": "Po dërgohen {{count}} porosi të ruajtura…",
+    "allSent": "U dërguan të gjitha",
+    "show": "Shfaq",
+    "waitingTitle": "Të ruajtura në këtë telefon ({{count}})",
+    "waitingHelp": "Dërgohen vetë, me radhë, sapo arka përgjigjet. Secila dërgohet një herë, edhe nëse shtypni Provo tani.",
+    "noTable": "Banak",
+    "op": {
+      "tickets.log": "Porosi",
+      "payments.record": "Pagesë",
+      "tickets.voidItem": "Anulim",
+      "tickets.voidTicket": "Anulim fature",
+      "tables.transfer": "Lëvizje tavoline",
+      "tables.setOpen": "Hap/mbyll tavolinë",
+      "covers.save": "Mysafirë"
+    },
+    "attempts_one": "Provuar {{count}} herë",
+    "attempts_other": "Provuar {{count}} herë",
+    "tryNow": "Provo tani",
+    "sendingNow": "Po dërgohet…"
+  },
+  "status": {
+    "light": {
+      "fiscal": "Fiskal",
+      "printers": "Printerët",
+      "backup": "Kopja",
+      "devices": "Pajisjet",
+      "database": "Databaza"
+    },
+    "short": {
+      "fiscal": "Fiskal",
+      "printers": "Print",
+      "backup": "Kopja",
+      "devices": "Pajisje",
+      "database": "DB"
+    },
+    "level": {
+      "green": "Në rregull",
+      "amber": "Kërkon vëmendje",
+      "red": "Nuk punon",
+      "off": "Joaktiv"
+    },
+    "whatToDo": "Çfarë të bëni:",
+    "reviewsBadge_one": "{{count}} shitje kërkon kontroll fiskal",
+    "reviewsBadge_other": "{{count}} shitje kërkojnë kontroll fiskal",
+    "openReviews": "Rregulloji ({{count}})",
+    "reviewsInAdmin": "Rregullojini te OneTap Admin › shenja e kuqe, ose Cilësimet › Fiskalizimi › Kontrollet.",
+    "sound": "Tingull kur një dritë bëhet e kuqe (kjo pajisje)"
+  },
+  "reviews": {
+    "title": "Kontrolle fiskale ({{count}})",
+    "none": "Asgjë nuk pret kontroll.",
+    "sale": "Shitje",
+    "fix": "Rregullo këtë shitje",
+    "notePlaceholder": "Çfarë kontrolluat ose bëtë (ruhet në regjistër)",
+    "noteRequired": "Shkruani një shënim të shkurtër: ruhet me emrin tuaj.",
+    "lookUp": "1. Kërkoni docId më sipër në easyPos. 2. Thoni çfarë gjetët:",
+    "itIsThere": "Është aty",
+    "notThere": "Nuk është aty",
+    "saveCodes": "Ruaj kodet",
+    "sendAgain": "Dërgo përsëri",
+    "markCorrected": "Korrigjimi u lëshua: shëno bërë",
+    "done": "U ruajt.",
+    "failed": "Nuk u ruajt."
   }
 }

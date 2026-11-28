@@ -862,6 +862,60 @@ export function noteReplayed(
   }
 }
 
+export interface WaitingItem {
+  id: string;
+  op: OfflineOp;
+  area: string;
+  table: string;
+  /** Line names and quantities, for an order. */
+  lines: string[];
+  createdAt: number;
+  attempts: number;
+  lastError?: string;
+}
+
+/** Pure: the waiting list as shown, oldest first. */
+export function waitingItemsView(
+  items: Array<
+    Pick<
+      OfflineQueueItem,
+      'id' | 'op' | 'args' | 'createdAt' | 'attempts' | 'lastError'
+    >
+  >,
+): WaitingItem[] {
+  return items
+    .map((it) => {
+      const a: any = it.args || {};
+      const raw = Array.isArray(a.items) ? a.items : [];
+      return {
+        id: it.id,
+        op: it.op,
+        area: String(a.area || a.fromArea || ''),
+        table: String(a.tableLabel || a.label || a.fromLabel || ''),
+        lines: raw
+          .filter((l: any) => l && !l.voided)
+          .map((l: any) => `${Number(l.qty) || 1}× ${String(l.name || '')}`),
+        createdAt: Number(it.createdAt) || 0,
+        attempts: Number(it.attempts) || 0,
+        ...(it.lastError ? { lastError: String(it.lastError) } : {}),
+      };
+    })
+    .sort((a, b) => a.createdAt - b.createdAt);
+}
+
+/** `offline-queue:syncing` {active}: the queue is sending right now. */
+export const QUEUE_SYNCING_EVENT = 'offline-queue:syncing';
+function broadcastSyncing(active: boolean) {
+  if (typeof window === 'undefined') return;
+  try {
+    window.dispatchEvent(
+      new CustomEvent(QUEUE_SYNCING_EVENT, { detail: { active } }),
+    );
+  } catch {
+    // the bar falls back to the waiting count
+  }
+}
+
 function broadcastReplayed(items: Array<{ op: OfflineOp; args?: any }>) {
   noteReplayed(items);
   if (!items.length || typeof window === 'undefined') return;
@@ -1181,6 +1235,17 @@ class OfflineQueue {
   }
 
   /** Waiter actions still queued (see {@link countQueuedActions}). */
+  /**
+   * What is waiting, for the "saved on this phone" list: read-only, oldest
+   * first. Nothing here can resend; the queue does, under each item's key.
+   */
+  async listWaiting(): Promise<WaitingItem[]> {
+    const items = (await this.getAll())
+      .map(this.normalize)
+      .filter((it): it is OfflineQueueItem => it !== null);
+    return waitingItemsView(items);
+  }
+
   async getPendingCount(): Promise<number> {
     const items = (await this.getAll())
       .map(this.normalize)
@@ -1234,6 +1299,7 @@ class OfflineQueue {
     this.syncing = true;
     this.syncStartedAt = Date.now();
     const pass = ++this.syncPass;
+    broadcastSyncing(true);
     let sent = 0;
     try {
       const raw = await this.getAll();
@@ -1386,7 +1452,10 @@ class OfflineQueue {
       this.armWake(leftover.filter((it) => !isHeldForOwner(it, signedIn)));
       return { sent, remaining: leftover.length };
     } finally {
-      if (pass === this.syncPass) this.syncing = false;
+      if (pass === this.syncPass) {
+        this.syncing = false;
+        broadcastSyncing(false);
+      }
     }
   }
 

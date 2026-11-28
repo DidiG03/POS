@@ -466,6 +466,9 @@ function SystemUpdatesSettings() {
         description={t('settingsUpdates.help')}
         actions={
           <>
+            <Link to="/admin/setup" className="pos-btn">
+              {t('setup.reopen')}
+            </Link>
             <Button
               variant={hasUpdate || downloaded ? 'secondary' : 'primary'}
               onClick={() => void checkNow()}

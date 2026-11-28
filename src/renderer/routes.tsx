@@ -61,6 +61,7 @@ const AdminReviewPage = lazyPage(() => import('./app/pages/AdminReviewPage'));
 const KdsPage = lazyPage(() => import('./app/pages/KdsPage'));
 const KdsSetupPage = lazyPage(() => import('./app/pages/KdsSetupPage'));
 const AdminSetupPage = lazyPage(() => import('./app/pages/AdminSetupPage'));
+const SetupWizardPage = lazyPage(() => import('./app/pages/SetupWizardPage'));
 const ReservationsLoginPage = lazyPage(
   () => import('./app/pages/ReservationsLoginPage'),
 );
@@ -594,6 +595,7 @@ export const routes: RouteObject[] = [
       { path: 'stock', element: withSuspense(<AdminStockPage />) },
       { path: 'bill-events', element: withSuspense(<AdminBillEventsPage />) },
       { path: 'settings', element: withSuspense(<AdminSettingsPage />) },
+      { path: 'setup', element: withSuspense(<SetupWizardPage />) },
     ],
   },
   // Standalone kitchen display window

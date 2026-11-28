@@ -1421,7 +1421,23 @@
     "tipInvalid": "Check the tip",
     "payingSlow": "The till is taking longer than usual. Nothing is charged twice: if this does not finish, the payment is sent again under the same code.",
     "splitBillInfo": "One payment is taken for the whole bill. To take each guest's share separately, pay by seat.",
-    "payTipPart": "(incl. tip {{tip}})"
+    "payTipPart": "(incl. tip {{tip}})",
+    "lineState": {
+      "NOT_SENT": "Not sent",
+      "QUEUED": "Saved, waiting",
+      "SENDING": "Sending",
+      "SENT": "Sent",
+      "IN_KITCHEN": "In kitchen",
+      "DONE": "Done"
+    },
+    "lineStateHelp": {
+      "NOT_SENT": "Only on this phone. Press Send to send it to the till.",
+      "QUEUED": "The till could not be reached, so this is saved on this phone. It is sent by itself when the till answers, once.",
+      "SENDING": "On its way to the till.",
+      "SENT": "The till has it.",
+      "IN_KITCHEN": "On the kitchen display.",
+      "DONE": "The kitchen marked it done."
+    }
   },
   "reservations": {
     "timeRequired": "Choose a time for the reservation.",
@@ -2126,5 +2142,194 @@
     "help": "Count the cash you are holding from this shift and enter the total. The shift slip shows it next to the cash you took.",
     "submit": "Clock out",
     "invalid": "Enter an amount, for example 120 or 95.50."
+  },
+  "setup": {
+    "title": "Set up OneTap",
+    "intro": "Each step is saved as you go. Skip any step and come back to it; close the window and it opens here again.",
+    "steps": "Setup steps",
+    "step": {
+      "business": "Business",
+      "fiscal": "Fiskalizimi",
+      "printers": "Printers",
+      "menu": "Menu",
+      "staff": "Staff",
+      "devices": "Phones & kitchen",
+      "finish": "Finish"
+    },
+    "back": "Back",
+    "skip": "Skip for now",
+    "later": "Finish later",
+    "continue": "Continue",
+    "saveContinue": "Save and continue",
+    "saveFailed": "Could not save. Check the till is on and try again.",
+    "reopen": "Setup wizard",
+    "business": {
+      "name": "Business name (on receipts)",
+      "address": "Address",
+      "country": "Country",
+      "albania": "Albania",
+      "uk": "United Kingdom",
+      "currency": "Currency",
+      "nipt": "NIPT",
+      "vat": "VAT number (optional)"
+    },
+    "fiscal": {
+      "notNeeded": "No fiscal registration is needed for a UK venue. Continue.",
+      "demoOnly": "Setup connects only to the easyPos DEMO (test) service, so nothing is filed with the tax office yet. Switch to the live service in Settings › Fiskalizimi once test sales work.",
+      "address": "easyPos DEMO address",
+      "token": "DEMO access token",
+      "tokenSaved": "A token is saved; leave empty to keep it.",
+      "operator": "Operator code",
+      "app": "Integration app ID",
+      "test": "Save and test connection",
+      "testing": "Testing…",
+      "ok": "Connected to easyPos DEMO.",
+      "failed": "The connection did not work:"
+    },
+    "station": {
+      "RECEIPT": "Receipts",
+      "KITCHEN": "Kitchen",
+      "BAR": "Bar",
+      "DESSERT": "Desserts"
+    },
+    "printers": {
+      "none": "No printer",
+      "test": "Print test slip",
+      "printed": "Test slip sent to {{station}}. Check that it came out.",
+      "testFailed": "The test slip did not print.",
+      "add": "Add a network printer",
+      "scan": "Find printers on the Wi-Fi",
+      "scanning": "Looking…",
+      "noneFound": "No printers answered. Enter the address shown on the printer's self-test page.",
+      "scanFailed": "Could not look for printers.",
+      "name": "Name",
+      "ip": "Address",
+      "port": "Port",
+      "chooseRole": "Choose what it prints.",
+      "addButton": "Add printer"
+    },
+    "menu": {
+      "count": "{{count}} items on the menu.",
+      "template": "Download CSV template",
+      "chooseCsv": "Choose CSV file",
+      "errors": "{{count}} problems: fix them in the file and choose it again. Nothing was imported.",
+      "ready": "{{count}} items ready to import.",
+      "line": "Line",
+      "column": "Column",
+      "problem": "Problem",
+      "import": "Import {{count}} items",
+      "importing": "Importing…",
+      "imported": "Imported: {{created}} new items, {{existing}} already there, {{categories}} new categories.",
+      "someFailed": "{{count}} lines failed (listed below).",
+      "manual": "Or add an item",
+      "category": "Category",
+      "item": "Item name",
+      "add": "Add item"
+    },
+    "staff": {
+      "name": "Name",
+      "pinLabel": "PIN",
+      "role": "Role",
+      "add": "Add person",
+      "nameRequired": "Enter a name.",
+      "pin": {
+        "required": "Enter a PIN.",
+        "adminDigits": "An admin PIN is 6 digits and not an easy one like 123456.",
+        "staffFormat": "A PIN is 4 to 6 digits."
+      }
+    },
+    "role": {
+      "ADMIN": "Admin",
+      "WAITER": "Waiter",
+      "CASHIER": "Cashier",
+      "BARTENDER": "Bartender",
+      "CHEF": "Chef"
+    },
+    "devices": {
+      "help": "Phones and kitchen screens connect to this till over the venue Wi-Fi.",
+      "address": "Till address",
+      "noAddress": "not on a network",
+      "code": "Pairing code",
+      "makeCode": "Create a pairing code",
+      "newCode": "New pairing code",
+      "waiterApp": "Waiter app: open it on the same Wi-Fi, choose this till, enter the pairing code.",
+      "kds": "Kitchen display: open OneTap KDS, choose this till, enter the pairing code."
+    },
+    "ok": "done",
+    "missing": "missing",
+    "fix": "Go to step",
+    "finish": {
+      "next": "Next: sign in on the till as a waiter, open a table and send a test order. It prints in the kitchen.",
+      "done": "Finish setup"
+    }
+  },
+  "connection": {
+    "offline": "Offline: the till can't be reached right now.",
+    "offlineSaved_one": "Offline – {{count}} order saved on this phone, will send automatically",
+    "offlineSaved_other": "Offline – {{count}} orders saved on this phone, will send automatically",
+    "sending_one": "Sending {{count}} saved order…",
+    "sending_other": "Sending {{count}} saved orders…",
+    "allSent": "All sent",
+    "show": "Show",
+    "waitingTitle": "Saved on this phone ({{count}})",
+    "waitingHelp": "These are sent by themselves, in order, as soon as the till answers. Each is sent once, even if you tap Try now.",
+    "noTable": "Counter",
+    "op": {
+      "tickets.log": "Order",
+      "payments.record": "Payment",
+      "tickets.voidItem": "Void",
+      "tickets.voidTicket": "Void bill",
+      "tables.transfer": "Move table",
+      "tables.setOpen": "Open/close table",
+      "covers.save": "Guests"
+    },
+    "attempts_one": "Tried {{count}} time",
+    "attempts_other": "Tried {{count}} times",
+    "tryNow": "Try now",
+    "sendingNow": "Sending…"
+  },
+  "status": {
+    "light": {
+      "fiscal": "Fiscal",
+      "printers": "Printers",
+      "backup": "Backup",
+      "devices": "Devices",
+      "database": "Database"
+    },
+    "short": {
+      "fiscal": "Fiscal",
+      "printers": "Print",
+      "backup": "Backup",
+      "devices": "Devices",
+      "database": "DB"
+    },
+    "level": {
+      "green": "OK",
+      "amber": "Needs attention",
+      "red": "Not working",
+      "off": "Off"
+    },
+    "whatToDo": "What to do:",
+    "reviewsBadge_one": "{{count}} sale needs a fiscal review",
+    "reviewsBadge_other": "{{count}} sales need a fiscal review",
+    "openReviews": "Fix them ({{count}})",
+    "reviewsInAdmin": "Fix them in OneTap Admin › the red badge, or Settings › Fiskalizimi › Reviews.",
+    "sound": "Sound when a light turns red (this device)"
+  },
+  "reviews": {
+    "title": "Fiscal reviews ({{count}})",
+    "none": "Nothing waits for review.",
+    "sale": "Sale",
+    "fix": "Fix this sale",
+    "notePlaceholder": "What you checked or did (kept in the log)",
+    "noteRequired": "Write a short note first: it is kept with your name.",
+    "lookUp": "1. Look up the docId above in easyPos. 2. Say what you found:",
+    "itIsThere": "It is there",
+    "notThere": "It is not there",
+    "saveCodes": "Save the codes",
+    "sendAgain": "Send again",
+    "markCorrected": "Correction issued: mark done",
+    "done": "Saved.",
+    "failed": "Could not save."
   }
 }

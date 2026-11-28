@@ -261,6 +261,7 @@ export const IPC_POLICIES: Readonly<Record<string, IpcPolicy>> = {
   'settings:testFiscalMinimalInvoice': { allow: ADMIN },
   'settings:listFiscalReviews': { allow: ADMIN },
   'settings:resolveFiscalReview': { allow: ADMIN },
+  'status:lights': { allow: POS },
   'settings:testPrint': { allow: ADMIN },
   'settings:testPrintProfile': { allow: ADMIN },
   'settings:testPrintVerbose': { allow: ADMIN },
@@ -288,6 +289,7 @@ export const IPC_POLICIES: Readonly<Record<string, IpcPolicy>> = {
 
   // -------------------------------------------------------------- tickets
   'tickets:getLatestForTable': { allow: POS },
+  'tickets:lineStatus': { allow: POS },
   'tickets:getTableTooltip': {
     allow: POS_AND_HOST,
     windows: RESERVATIONS_WINDOWS,

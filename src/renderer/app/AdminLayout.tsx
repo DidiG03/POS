@@ -1,5 +1,8 @@
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { setupWizardShouldOpen } from '@shared/setupWizard';
+import { StatusLights } from './components/StatusLights';
+import { FiscalReviewDialog } from './components/FiscalReviewDialog';
 import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAdminSessionStore } from '../stores/adminSession';
@@ -52,6 +55,7 @@ export default function AdminLayout() {
   const navigate = useNavigate();
   const location = useLocation();
 
+  const [reviewsOpen, setReviewsOpen] = useState(false);
   const [netOk, setNetOk] = useState(true);
   const [backendOk, setBackendOk] = useState(true);
   const [latencyMs, setLatencyMs] = useState<number | null>(null);
@@ -61,6 +65,21 @@ export default function AdminLayout() {
     void loadPosRealtimeSync();
     initRendererSentry();
   }, []);
+
+  // A till with no business set up opens the setup wizard by itself
+  // (`@shared/setupWizard`), once per sign-in.
+  const wizardChecked = useRef(false);
+  useEffect(() => {
+    if (!me || wizardChecked.current) return;
+    wizardChecked.current = true;
+    if (location.pathname.startsWith('/admin/setup')) return;
+    void window.api.settings
+      .get()
+      .then((s: any) => {
+        if (setupWizardShouldOpen(s)) navigate('/admin/setup');
+      })
+      .catch(() => undefined);
+  }, [me, location.pathname, navigate]);
 
   useEffect(() => {
     const update = () => {
@@ -320,6 +339,11 @@ export default function AdminLayout() {
           </h1>
 
           <div className="flex shrink-0 items-center gap-1.5">
+            <StatusLights onOpenReviews={() => setReviewsOpen(true)} />
+            <FiscalReviewDialog
+              open={reviewsOpen}
+              onClose={() => setReviewsOpen(false)}
+            />
             <StatusChip
               tone={connectivity.tone}
               title={connectivityTitle}

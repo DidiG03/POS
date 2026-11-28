@@ -1543,6 +1543,11 @@ export function installBrowserLanApi(): void {
         }
         return { ok: true };
       },
+      async lineStatus(area: string, tableLabel: string) {
+        return await goLan(
+          `/tickets/line-status?area=${encodeURIComponent(area)}&table=${encodeURIComponent(tableLabel)}`,
+        );
+      },
       async getLatestForTable(area: string, tableLabel: string) {
         return await goLan(
           `/tickets/latest?area=${encodeURIComponent(area)}&table=${encodeURIComponent(tableLabel)}`,
@@ -1662,6 +1667,11 @@ export function installBrowserLanApi(): void {
     health: {
       async ping() {
         return await goLan('/health');
+      },
+    },
+    status: {
+      async lights() {
+        return await goLan('/status/lights');
       },
     },
     network: {

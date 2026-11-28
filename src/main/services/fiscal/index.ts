@@ -1,4 +1,5 @@
 import type { FiscalClaimRecord } from './claims';
+import { noteDatabaseBusy } from '../dbBusy';
 import {
   isDatabaseError,
   staffSafeMessage,
@@ -558,6 +559,7 @@ async function registerUnderClaim(input: {
     // ledger being busy is said in words a waiter can act on; the ORM's
     // text goes to the log only (`@shared/staffError`).
     if (isDatabaseError(e)) {
+      noteDatabaseBusy();
       console.warn('[fiscal] claim not recorded, the ledger is busy:', e);
       return { kind: 'retryable', message: TILL_BUSY_MESSAGE };
     }

@@ -51,3 +51,10 @@ export function olderClients(
 export function resetClientVersions(): void {
   seen.clear();
 }
+
+/** Devices that called the till in the last `withinMs` (default 2 min). */
+export function onlineClients(now = Date.now(), withinMs = 2 * 60_000): number {
+  let n = 0;
+  for (const { at } of seen.values()) if (now - at <= withinMs) n += 1;
+  return n;
+}

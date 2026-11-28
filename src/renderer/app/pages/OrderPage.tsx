@@ -1,4 +1,5 @@
 import type { CashLimit } from '@shared/cashLimit';
+import { lineSendState } from '../../utils/lineSendState';
 import { chargeWithTip } from '@shared/tips';
 import type { PaymentApprovalPurpose } from '@shared/approvalPurpose';
 import {
@@ -54,6 +55,7 @@ import { parseCountedCash } from '@shared/cashCount';
 import { useSessionStore } from '../../stores/session';
 import { logTicket, printTicket } from '../../api';
 import {
+  QUEUE_SYNCING_EVENT,
   offlineQueue as replayQueue,
   retireQueuedTableOpen,
   tableRecentlyReplayed,
@@ -820,6 +822,68 @@ export default function OrderPage() {
   const [busyAction, setBusyAction] = useState<
     'send' | 'pay' | 'void' | 'request' | null
   >(null);
+  /** The offline queue is sending right now (`QUEUE_SYNCING_EVENT`). */
+  const [queueSyncing, setQueueSyncing] = useState(false);
+  useEffect(() => {
+    const on = (e: Event) =>
+      setQueueSyncing(Boolean((e as CustomEvent).detail?.active));
+    window.addEventListener(QUEUE_SYNCING_EVENT, on);
+    return () => window.removeEventListener(QUEUE_SYNCING_EVENT, on);
+  }, []);
+  /**
+   * Per bill line id: on the kitchen display or done (`lineKitchenStatus`).
+   * Read when the table opens and when its tickets change (a send, a KDS
+   * bump), at most every 1.5 s, and only while something is sent.
+   */
+  const [kitchenStatus, setKitchenStatus] = useState<Record<
+    string,
+    'IN_KITCHEN' | 'DONE'
+  > | null>(null);
+  const kitchenTableKey = selectedTable
+    ? `${selectedTable.area}\u0001${selectedTable.label}`
+    : '';
+  const hasSentLines = lines.some((l) => !l.staged && !l.voided && !l.paid);
+  useEffect(() => {
+    setKitchenStatus(null);
+    const read = window.api.tickets.lineStatus;
+    if (!kitchenTableKey || !hasTables || !hasSentLines || !read) return;
+    const [area, label] = kitchenTableKey.split('\u0001');
+    let cancelled = false;
+    let last = 0;
+    let timer: number | undefined;
+    const fetchNow = () => {
+      last = Date.now();
+      void read(area, label)
+        .then((r) => {
+          if (!cancelled && r && typeof r === 'object') setKitchenStatus(r);
+        })
+        .catch(() => undefined);
+    };
+    const schedule = () => {
+      if (timer != null) return;
+      const wait = Math.max(0, 1_500 - (Date.now() - last));
+      timer = window.setTimeout(() => {
+        timer = undefined;
+        fetchNow();
+      }, wait);
+    };
+    const onChange = (ev: Event) => {
+      const d = (ev as CustomEvent).detail || {};
+      if (
+        String(d.area || '') === area &&
+        String(d.tableLabel || d.label || '') === label
+      ) {
+        schedule();
+      }
+    };
+    fetchNow();
+    window.addEventListener('pos:ticketsChanged', onChange);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+      window.removeEventListener('pos:ticketsChanged', onChange);
+    };
+  }, [kitchenTableKey, hasTables, hasSentLines]);
   /** "Paying…" has waited long: say the till is slow, and that it is safe. */
   const [paySlow, setPaySlow] = useState(false);
   useEffect(() => {
@@ -3036,6 +3100,10 @@ export default function OrderPage() {
         onRemove={removeLine}
         onVoid={openVoidTarget}
         onNoteChange={setLineNote}
+        sendState={lineSendState(line, {
+          sending: busyAction === 'send' || queueSyncing,
+          kitchen: kitchenStatus,
+        })}
       />
     ),
     [
@@ -3050,6 +3118,9 @@ export default function OrderPage() {
       setLineNote,
       showRequestOnly,
       toggleLineSelect,
+      busyAction,
+      queueSyncing,
+      kitchenStatus,
     ],
   );
 
@@ -3652,6 +3723,10 @@ export default function OrderPage() {
                     onRemove={removeLine}
                     onVoid={openVoidTarget}
                     onNoteChange={setLineNote}
+                    sendState={lineSendState(line, {
+                      sending: busyAction === 'send' || queueSyncing,
+                      kitchen: kitchenStatus,
+                    })}
                   />
                 ))
               )}

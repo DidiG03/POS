@@ -257,6 +257,8 @@ const api: Api = {
     log: (payload: any) => ipcRenderer.invoke('tickets:log', payload),
     getLatestForTable: (area: string, tableLabel: string) =>
       ipcRenderer.invoke('tickets:getLatestForTable', { area, tableLabel }),
+    lineStatus: (area: string, tableLabel: string) =>
+      ipcRenderer.invoke('tickets:lineStatus', { area, tableLabel }),
     voidItem: (payload: any) => ipcRenderer.invoke('tickets:voidItem', payload),
     voidTicket: (payload: any) =>
       ipcRenderer.invoke('tickets:voidTicket', payload),
@@ -324,6 +326,9 @@ const api: Api = {
       ipcRenderer.invoke('requests:markApplied', { ids }),
     listMine: (area: string, tableLabel: string) =>
       ipcRenderer.invoke('requests:listMine', { area, tableLabel }),
+  },
+  status: {
+    lights: () => ipcRenderer.invoke('status:lights'),
   },
   network: {
     getIps: () => ipcRenderer.invoke('network:getIps'),

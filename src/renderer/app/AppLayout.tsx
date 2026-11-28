@@ -32,6 +32,8 @@ import {
 import { heartbeatDelayMs, tillLooksDown } from '../utils/netQuality';
 import { Button } from '../components/ui/Button';
 import { ConfirmDialog, Modal } from '../components/ui/Modal';
+import { ConnectionBar } from './components/ConnectionBar';
+import { StatusLights } from './components/StatusLights';
 import { EmptyState } from '../components/ui/Surface';
 import { StatusChip } from '../components/ui/Badge';
 import { cn } from '../components/ui/cn';
@@ -54,7 +56,6 @@ import {
   IconOrders,
   IconReports,
   IconTables,
-  IconWifiOff,
 } from '../components/icons';
 
 const UpdateNotification = lazy(() =>
@@ -679,40 +680,9 @@ export default function AppLayout() {
         )}
       </Modal>
 
-      {isBrowserClient && (!netOk || !backendOk || queuedCount > 0) && (
-        <div
-          role="status"
-          className="flex items-center justify-center gap-2 border-b border-amber-500/25 bg-amber-500/12 px-4 py-1.5 text-[12px] font-medium text-amber-200"
-        >
-          <IconWifiOff className="size-[15px] shrink-0" />
-          <span className="min-w-0">
-            {/* Wi-Fi up but the till silent is its own state: the waiter
-                needs to know it is the till, and how to try again. */}
-            {netOk && !backendOk
-              ? t('layout.tillUnreachable')
-              : !netOk
-                ? t('layout.networkBanner')
-                : ''}
-            {queuedCount > 0
-              ? ` ${t('layout.queuedWaiting', { count: queuedCount })}`
-              : ''}
-          </span>
-          {(netOk && !backendOk) || queuedCount > 0 ? (
-            <button
-              type="button"
-              className="shrink-0 rounded border border-amber-400/40 px-2 py-0.5 text-amber-100"
-              onClick={() => {
-                window.dispatchEvent(new Event('pos:reconnect'));
-                window.dispatchEvent(new Event('focus'));
-                // Send what is waiting now, not on the next backoff tick.
-                void offlineQueue.sync().catch(() => undefined);
-              }}
-            >
-              {t('common.retry')}
-            </button>
-          ) : null}
-        </div>
-      )}
+      {isBrowserClient ? (
+        <ConnectionBar tillDown={!netOk || !backendOk} waiting={queuedCount} />
+      ) : null}
 
       <WaiterFiscalDialog
         staff={
@@ -735,6 +705,12 @@ export default function AppLayout() {
             wordmark={false}
             className="shrink-0 sm:hidden"
           />
+          {/* Status lights: on the till, and for managers on phones. */}
+          {user &&
+          (!isBrowserClient ||
+            ['ADMIN', 'CASHIER'].includes(String(user.role || ''))) ? (
+            <StatusLights />
+          ) : null}
 
           {user ? (
             <>
