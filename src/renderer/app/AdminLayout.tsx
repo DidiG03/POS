@@ -199,6 +199,7 @@ export default function AdminLayout() {
   // Longest matching route wins so /admin doesn't claim every child path.
   const activeLabel = useMemo(() => {
     const path = location.pathname.replace(/\/+$/, '') || '/admin';
+    if (path === '/admin/setup') return t('setup.title');
     const match = navItems
       .filter((item) => path === item.to || path.startsWith(`${item.to}/`))
       .sort((a, b) => b.to.length - a.to.length)[0];

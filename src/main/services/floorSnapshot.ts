@@ -252,14 +252,20 @@ async function loadFloorSnapshot(area?: string): Promise<FloorSnapshot> {
     openedAtByKey[k] = t.openedAt.toISOString();
   }
 
-  if (openKeys.length === 0) return { tables: [] };
+  if (openKeys.length === 0) {
+    return {
+      tables: [],
+      recentlyPaid: await recentlyPaidTables(wantArea, new Set()),
+    };
+  }
 
   const openPairs = openKeys
     .map((k) => splitTableKey(k))
     .filter((p): p is { area: string; label: string } => Boolean(p));
-  const [ticketRows, coverRows] = await Promise.all([
+  const [ticketRows, coverRows, extras] = await Promise.all([
     fetchLatestTicketSnapshots(openPairs),
     fetchLatestCoverSnapshots(openPairs),
+    floorStateExtras(openPairs, sinceMsByKey),
   ]);
 
   type TicketSnapRow = DatedRow & {
@@ -327,7 +333,122 @@ async function loadFloorSnapshot(area?: string): Promise<FloorSnapshot> {
       // The tapped table still hydrates from getLatestForTable / ticket cache.
       items: [],
       note: ticket ? stripTransferTagsFromNote(ticket.note) || null : null,
+      // For the table colours and timers (`@shared/tableState`).
+      hasItems: items.some((it: any) => it && it.voided !== true),
+      lastActionAt: ticket?.createdAt
+        ? new Date(ticket.createdAt as any).toISOString()
+        : openedAtByKey[k] || null,
+      billPrintedAt: extras.billPrintedAt.get(k) ?? null,
+      kitchen: extras.kitchen.get(k) ?? 'none',
     });
   }
-  return { tables };
+  return {
+    tables,
+    recentlyPaid: await recentlyPaidTables(wantArea, new Set(openKeys)),
+  };
+}
+
+/** Bill printed and kitchen state per open table, in two reads. */
+async function floorStateExtras(
+  pairs: Array<{ area: string; label: string }>,
+  sinceMsByKey: Record<string, number | null>,
+): Promise<{
+  billPrintedAt: Map<string, string>;
+  kitchen: Map<string, 'none' | 'cooking' | 'served'>;
+}> {
+  const billPrintedAt = new Map<string, string>();
+  const kitchen = new Map<string, 'none' | 'cooking' | 'served'>();
+  if (!pairs.length) return { billPrintedAt, kitchen };
+  const since = Math.min(
+    ...pairs.map(
+      (p) => sinceMsByKey[tableSessionKey(p.area, p.label)] ?? Date.now(),
+    ),
+  );
+  const areas = Array.from(new Set(pairs.map((p) => p.area)));
+  const labels = Array.from(new Set(pairs.map((p) => p.label)));
+  const [bills, orders] = await Promise.all([
+    safeFindMany((prisma as any).billEvent, {
+      where: {
+        kind: 'BILL_PRINTED',
+        area: { in: areas },
+        tableLabel: { in: labels },
+        createdAt: { gte: new Date(since) },
+      },
+      select: { area: true, tableLabel: true, createdAt: true },
+    }),
+    safeFindMany((prisma as any).kdsOrder, {
+      where: {
+        area: { in: areas },
+        tableLabel: { in: labels },
+        closedAt: null,
+      },
+      select: {
+        area: true,
+        tableLabel: true,
+        tickets: { select: { stations: { select: { status: true } } } },
+      },
+    }),
+  ]);
+  for (const b of bills as any[]) {
+    const k = tableSessionKey(b.area, b.tableLabel);
+    const opened = sinceMsByKey[k];
+    const at = new Date(b.createdAt).getTime();
+    if (opened != null && at < opened) continue;
+    const iso = new Date(at).toISOString();
+    if (!billPrintedAt.has(k) || billPrintedAt.get(k)! < iso)
+      billPrintedAt.set(k, iso);
+  }
+  for (const o of orders as any[]) {
+    const k = tableSessionKey(o.area, o.tableLabel);
+    const statuses = (o.tickets || []).flatMap((t: any) =>
+      (t.stations || []).map((s: any) => String(s.status).toUpperCase()),
+    );
+    if (!statuses.length) continue;
+    kitchen.set(
+      k,
+      statuses.every((s: string) => s === 'DONE') ? 'served' : 'cooking',
+    );
+  }
+  return { billPrintedAt, kitchen };
+}
+
+/** Tables closed by a payment in the last hour and not open again. */
+async function recentlyPaidTables(
+  wantArea: string,
+  openKeys: Set<string>,
+): Promise<Array<{ area: string; label: string; paidAt: string }>> {
+  const rows: any[] = await safeFindMany((prisma as any).order, {
+    where: {
+      closedAt: { gte: new Date(Date.now() - 60 * 60_000) },
+      ...(wantArea ? { area: wantArea } : {}),
+    },
+    select: { area: true, tableLabel: true, closedAt: true },
+    orderBy: { id: 'desc' },
+    take: 200,
+  });
+  const out = new Map<
+    string,
+    { area: string; label: string; paidAt: string }
+  >();
+  for (const r of rows) {
+    if (!r.area || !r.tableLabel) continue;
+    const k = tableSessionKey(r.area, r.tableLabel);
+    if (openKeys.has(k) || out.has(k)) continue;
+    out.set(k, {
+      area: r.area,
+      label: r.tableLabel,
+      paidAt: new Date(r.closedAt).toISOString(),
+    });
+  }
+  return [...out.values()];
+}
+
+/** findMany that answers [] when the model is missing or the read fails. */
+function safeFindMany(model: any, args: unknown): Promise<any[]> {
+  try {
+    if (!model?.findMany) return Promise.resolve([]);
+    return Promise.resolve(model.findMany(args)).catch(() => []);
+  } catch {
+    return Promise.resolve([]);
+  }
 }

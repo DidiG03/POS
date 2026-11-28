@@ -123,15 +123,19 @@ export function setupChecklist(
     },
     {
       key: 'fiscal',
-      ok: f.country !== 'AL' || (f.fiscalEnabled && f.fiscalTested),
+      ok:
+        f.country === 'UK' ||
+        (f.country === 'AL' && f.fiscalEnabled && f.fiscalTested),
       detail:
-        f.country !== 'AL'
-          ? 'Not needed'
-          : !f.fiscalEnabled
-            ? 'Fiskalizimi is not set up: sales cannot be filed'
-            : f.fiscalTested
-              ? 'Connected'
-              : 'Not tested yet',
+        f.country === ''
+          ? 'Choose the country in Business first'
+          : f.country === 'UK'
+            ? 'Not needed'
+            : !f.fiscalEnabled
+              ? 'Fiskalizimi is not set up: sales cannot be filed'
+              : f.fiscalTested
+                ? 'Connected'
+                : 'Not tested yet',
     },
     {
       key: 'printers',

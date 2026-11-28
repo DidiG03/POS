@@ -1,8 +1,42 @@
-/** Minutes on NEW tickets before the timer turns amber. */
-export const KDS_TIMER_WARNING_MINUTES = 10;
+/** Minutes on NEW tickets before the ticket turns amber (default). */
+export const KDS_TIMER_WARNING_MINUTES = 8;
 
-/** Minutes on NEW tickets before the timer turns red. */
-export const KDS_TIMER_LATE_MINUTES = 20;
+/** Minutes on NEW tickets before the ticket turns red (default). */
+export const KDS_TIMER_LATE_MINUTES = 15;
+
+/** The venue's ticket-age limits (Admin › Settings › Kitchen display). */
+export function kdsTimerThresholds(settings: any): {
+  warningMinutes: number;
+  lateMinutes: number;
+} {
+  const k = settings?.kds || {};
+  const warn = Math.round(Number(k.ticketAmberMinutes));
+  const late = Math.round(Number(k.ticketRedMinutes));
+  const w =
+    Number.isFinite(warn) && warn >= 1 && warn <= 120
+      ? warn
+      : KDS_TIMER_WARNING_MINUTES;
+  const l =
+    Number.isFinite(late) && late > w && late <= 240
+      ? late
+      : Math.max(w + 1, KDS_TIMER_LATE_MINUTES);
+  return { warningMinutes: w, lateMinutes: l };
+}
+
+/** A note asking for speed, or warning of an allergy (shown big on the card). */
+export function kdsNoteFlags(note: unknown): {
+  rush: boolean;
+  allergy: boolean;
+} {
+  const s = String(note || '').toLowerCase();
+  return {
+    rush: /\b(rush|urgent|asap|priority|quick|fast)\b|shpejt|urgjent/.test(s),
+    allergy:
+      /allerg|alergj|gluten|celiac|coeliac|nut\b|nuts|peanut|arr[eë]|lactose|laktoz|vegan|shellfish|fruta deti/.test(
+        s,
+      ),
+  };
+}
 
 export type KdsTimerUrgency = 'fresh' | 'warning' | 'late';
 
@@ -20,19 +54,35 @@ export function kdsElapsedSeconds(
 
 export function kdsTimerUrgencyFromElapsed(
   elapsedSec: number,
+  th?: { warningMinutes: number; lateMinutes: number },
 ): KdsTimerUrgency {
-  if (elapsedSec >= LATE_SEC) return 'late';
-  if (elapsedSec >= WARNING_SEC) return 'warning';
+  const late = th ? th.lateMinutes * 60 : LATE_SEC;
+  const warn = th ? th.warningMinutes * 60 : WARNING_SEC;
+  if (elapsedSec >= late) return 'late';
+  if (elapsedSec >= warn) return 'warning';
   return 'fresh';
 }
 
 export function kdsTimerUrgencyFromIso(
   iso: string,
   nowMs?: number,
+  th?: { warningMinutes: number; lateMinutes: number },
 ): KdsTimerUrgency | null {
   const elapsed = kdsElapsedSeconds(iso, nowMs);
   if (elapsed == null) return null;
-  return kdsTimerUrgencyFromElapsed(elapsed);
+  return kdsTimerUrgencyFromElapsed(elapsed, th);
+}
+
+/** Whole-card colour by age, with the word for it (not colour alone). */
+export function kdsTimerUrgencyCardClass(urgency: KdsTimerUrgency): string {
+  switch (urgency) {
+    case 'fresh':
+      return 'kds-age-fresh';
+    case 'warning':
+      return 'kds-age-warning';
+    case 'late':
+      return 'kds-age-late';
+  }
 }
 
 /** Tailwind classes for the live timer label on ticket cards. */

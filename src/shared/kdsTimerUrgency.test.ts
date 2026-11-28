@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   kdsElapsedSeconds,
+  kdsNoteFlags,
+  kdsTimerThresholds,
   kdsTimerUrgencyFromElapsed,
   kdsTimerUrgencyFromIso,
   oldestWaitingFiredAt,
@@ -14,18 +16,46 @@ describe('kdsTimerUrgency', () => {
     expect(kdsElapsedSeconds(fired, now)).toBe(125);
   });
 
+  // Defaults: amber after 8 minutes, red after 15.
   it('returns fresh under warning threshold', () => {
-    expect(kdsTimerUrgencyFromElapsed(9 * 60)).toBe('fresh');
+    expect(kdsTimerUrgencyFromElapsed(7 * 60 + 59)).toBe('fresh');
   });
 
   it('returns warning between thresholds', () => {
-    expect(kdsTimerUrgencyFromElapsed(10 * 60)).toBe('warning');
-    expect(kdsTimerUrgencyFromElapsed(19 * 60 + 59)).toBe('warning');
+    expect(kdsTimerUrgencyFromElapsed(8 * 60)).toBe('warning');
+    expect(kdsTimerUrgencyFromElapsed(14 * 60 + 59)).toBe('warning');
   });
 
   it('returns late at or above late threshold', () => {
-    expect(kdsTimerUrgencyFromElapsed(20 * 60)).toBe('late');
+    expect(kdsTimerUrgencyFromElapsed(15 * 60)).toBe('late');
     expect(kdsTimerUrgencyFromElapsed(90 * 60)).toBe('late');
+  });
+
+  it('follows the venue thresholds, and refuses nonsense ones', () => {
+    const th = kdsTimerThresholds({
+      kds: { ticketAmberMinutes: 5, ticketRedMinutes: 9 },
+    });
+    expect(th).toEqual({ warningMinutes: 5, lateMinutes: 9 });
+    expect(kdsTimerUrgencyFromElapsed(5 * 60, th)).toBe('warning');
+    expect(kdsTimerUrgencyFromElapsed(9 * 60, th)).toBe('late');
+    expect(kdsTimerThresholds({})).toEqual({
+      warningMinutes: 8,
+      lateMinutes: 15,
+    });
+    // Red must come after amber.
+    expect(
+      kdsTimerThresholds({
+        kds: { ticketAmberMinutes: 12, ticketRedMinutes: 6 },
+      }),
+    ).toEqual({ warningMinutes: 12, lateMinutes: 15 });
+  });
+
+  it('flags rush and allergy notes, in English and Albanian', () => {
+    expect(kdsNoteFlags('RUSH please')).toEqual({ rush: true, allergy: false });
+    expect(kdsNoteFlags('shpejt!')).toMatchObject({ rush: true });
+    expect(kdsNoteFlags('Nut allergy')).toMatchObject({ allergy: true });
+    expect(kdsNoteFlags('pa gluten')).toMatchObject({ allergy: true });
+    expect(kdsNoteFlags('no onions')).toEqual({ rush: false, allergy: false });
   });
 
   it('derives urgency from ISO firedAt', () => {

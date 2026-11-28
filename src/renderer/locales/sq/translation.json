@@ -540,7 +540,15 @@
     "clearPinHint": "Pastrimi i kartave të përfunduara kërkon një menaxher. Vendos PIN-in e menaxherit.",
     "clearPinSubmit": "Pastro të përfunduarat",
     "clearPinWrong": "PIN i gabuar i menaxherit.",
-    "pairWrongCode": "Kodi i lidhjes nuk është i saktë. Kontrollojeni te Admin → Cilësimet."
+    "pairWrongCode": "Kodi i lidhjes nuk është i saktë. Kontrollojeni te Admin → Cilësimet.",
+    "age": {
+      "warning": "Po vonohet",
+      "late": "Vonë"
+    },
+    "flag": {
+      "rush": "Urgjent",
+      "allergy": "Alergji"
+    }
   },
   "tables": {
     "loading": "Duke ngarkuar tavolinat…",
@@ -570,7 +578,17 @@
     "tableLabel": "Tavolina {{label}}",
     "payTicket": "Paguaj biletën",
     "menuNeedsOpen": "Hap tavolinën më parë — kjo është e lirë.",
-    "menuNoItems": "Nuk ka asgjë për të printuar në këtë tavolinë."
+    "menuNoItems": "Nuk ka asgjë për të printuar në këtë tavolinë.",
+    "state": {
+      "seated": "Ulur",
+      "ordered": "Porositur",
+      "served": "Shërbyer",
+      "billRequested": "Fatura e printuar",
+      "paid": "Paguar: për pastrim",
+      "idle": "Pret shumë gjatë",
+      "free": "E lirë"
+    },
+    "legend": "Ngjyrat e tavolinave"
   },
   "preferences": {
     "loadFailed": "Preferencat nuk u ngarkuan, ndaj nuk u ruajt asgjë. Hapeni sërish këtë faqe dhe provoni përsëri.",
@@ -2330,6 +2348,18 @@
     "sendAgain": "Dërgo përsëri",
     "markCorrected": "Korrigjimi u lëshua: shëno bërë",
     "done": "U ruajt.",
+    "failed": "Nuk u ruajt."
+  },
+  "serviceTiming": {
+    "title": "Kohë dhe ngjyra",
+    "idle": "Shëno tavolinën që pret më shumë se (minuta)",
+    "idleHelp": "Llogaritet nga porosia e fundit. Tavolina merr një rreth të kuq.",
+    "clear": "Shfaq tavolinën e paguar \"për pastrim\" për (minuta)",
+    "amber": "Fleta e kuzhinës bëhet portokalli pas (minutash)",
+    "red": "Fleta e kuzhinës bëhet e kuqe pas (minutash)",
+    "soundNew": "Tingull në ekranin e kuzhinës për fletë të re",
+    "soundRush": "Tingull më i fortë për fletë urgjente",
+    "saved": "U ruajt. Ekranet e hapura përditësohen brenda sekondave.",
     "failed": "Nuk u ruajt."
   }
 }

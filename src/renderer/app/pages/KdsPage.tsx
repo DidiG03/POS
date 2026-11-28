@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next';
 import {
   useCallback,
   useEffect,
@@ -33,7 +34,10 @@ import {
 import {
   KDS_TIMER_LATE_MINUTES,
   KDS_TIMER_WARNING_MINUTES,
+  kdsNoteFlags,
+  kdsTimerThresholds,
   kdsTimerUrgencyCardAccent,
+  kdsTimerUrgencyCardClass,
   kdsTimerUrgencyFromIso,
   kdsTimerUrgencyTextClass,
 } from '@shared/kdsTimerUrgency';
@@ -210,8 +214,32 @@ type KdsDevBumpMenu = {
   itemIdx: number | null;
 };
 
+/** A short chime; two notes for a rush ticket. */
+function kdsChime(rush: boolean) {
+  try {
+    const Ctx =
+      (window as any).AudioContext || (window as any).webkitAudioContext;
+    if (!Ctx) return;
+    const ctx = new Ctx();
+    const notes = rush ? [880, 660, 880] : [660];
+    notes.forEach((f, i) => {
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.frequency.value = f;
+      g.gain.value = 0.12;
+      o.connect(g);
+      g.connect(ctx.destination);
+      o.start(ctx.currentTime + i * 0.18);
+      o.stop(ctx.currentTime + i * 0.18 + 0.15);
+    });
+  } catch {
+    // no audio on this screen
+  }
+}
+
 export default function KdsPage() {
   const navigate = useNavigate();
+  const { t: tr } = useTranslation();
   useEffect(() => {
     void loadPosRealtimeSync();
     initRendererSentry();
@@ -223,6 +251,39 @@ export default function KdsPage() {
   const cookerRef = useRef<boolean>(cooker);
   const [tab, setTab] = useState<Tab>('NEW');
   const [tickets, setTickets] = useState<KdsTicket[]>([]);
+  /** The venue's ticket-age times and sounds, re-read on any settings change. */
+  const [ageTh, setAgeTh] = useState(() => kdsTimerThresholds({}));
+  const soundsRef = useRef({ newTicket: false, rush: false });
+  useEffect(() => {
+    const load = () =>
+      void window.api.settings
+        .get()
+        .then((s: any) => {
+          setAgeTh(kdsTimerThresholds(s));
+          soundsRef.current = {
+            newTicket: s?.kds?.soundNewTicket === true,
+            rush: s?.kds?.soundRush === true,
+          };
+        })
+        .catch(() => undefined);
+    load();
+    window.addEventListener('pos:settingsChanged', load);
+    return () => window.removeEventListener('pos:settingsChanged', load);
+  }, []);
+  // A sound for tickets that just arrived (and a stronger one for rush),
+  // when the venue switched it on. Never for the first board after opening.
+  const seenTicketIds = useRef<Set<number> | null>(null);
+  useEffect(() => {
+    const ids = new Set(tickets.map((x) => x.ticketId));
+    const seen = seenTicketIds.current;
+    seenTicketIds.current = ids;
+    if (!seen) return;
+    const fresh = tickets.filter((x) => !seen.has(x.ticketId));
+    if (!fresh.length) return;
+    const rush = fresh.some((x) => kdsNoteFlags(x.note).rush);
+    if (rush && soundsRef.current.rush) kdsChime(true);
+    else if (soundsRef.current.newTicket) kdsChime(false);
+  }, [tickets]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   // The till asks this display for its pairing code (401 on `/kds/*`), or
@@ -1776,8 +1837,9 @@ export default function KdsPage() {
                 const timeLabel = timeIso ? fmtAgo(timeIso, clockMs) : '';
                 const timerUrgency =
                   tab === 'NEW' && t.firedAt
-                    ? kdsTimerUrgencyFromIso(t.firedAt, clockMs)
+                    ? kdsTimerUrgencyFromIso(t.firedAt, clockMs, ageTh)
                     : null;
+                const flags = kdsNoteFlags(t.note);
 
                 return (
                   <div
@@ -1793,9 +1855,10 @@ export default function KdsPage() {
                         ? 'Right-click to bump (dev)'
                         : undefined
                     }
+                    data-age={timerUrgency ?? undefined}
                     className={`relative mb-3 bg-gray-900 border rounded p-3 transition-shadow [content-visibility:auto] [contain-intrinsic-size:auto_240px] ${
                       timerUrgency
-                        ? kdsTimerUrgencyCardAccent(timerUrgency)
+                        ? `${kdsTimerUrgencyCardAccent(timerUrgency)} ${kdsTimerUrgencyCardClass(timerUrgency)}`
                         : ''
                     } ${
                       ticketIdx === selectedIdx
@@ -1852,9 +1915,38 @@ export default function KdsPage() {
                       ) : null}
                     </div>
 
+                    {timerUrgency && timerUrgency !== 'fresh' ? (
+                      <div className="mb-1 text-xs font-bold uppercase tracking-wide">
+                        {timerUrgency === 'late' ? '■ ' : '▲ '}
+                        {timerUrgency === 'late'
+                          ? tr('kds.age.late')
+                          : tr('kds.age.warning')}
+                      </div>
+                    ) : null}
+                    {flags.rush || flags.allergy ? (
+                      <div
+                        className="mb-2 flex flex-wrap gap-1.5"
+                        data-kds-flags
+                      >
+                        {flags.rush ? (
+                          <span className="rounded bg-red-600 px-2 py-0.5 text-sm font-black uppercase text-white">
+                            ⚡ {tr('kds.flag.rush')}
+                          </span>
+                        ) : null}
+                        {flags.allergy ? (
+                          <span className="rounded bg-yellow-400 px-2 py-0.5 text-sm font-black uppercase text-black">
+                            ⚠ {tr('kds.flag.allergy')}
+                          </span>
+                        ) : null}
+                      </div>
+                    ) : null}
                     {t.note && (
                       <div
-                        className="mb-2 rounded border border-gray-800 bg-gray-950 p-2 text-base font-light leading-snug"
+                        className={`mb-2 rounded border p-2 text-base leading-snug ${
+                          flags.allergy || flags.rush
+                            ? 'border-yellow-400 bg-yellow-400/10 font-semibold'
+                            : 'border-gray-800 bg-gray-950 font-light'
+                        }`}
                         data-kds-ticket-note
                         style={{ breakInside: 'avoid' }}
                       >

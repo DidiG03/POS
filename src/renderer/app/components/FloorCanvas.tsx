@@ -366,9 +366,13 @@ function tablePixelSize(node: FloorTableNode): { w: number; h: number } {
 
 function occupancyColorRank(cls?: string | null): number {
   const s = String(cls || '');
-  if (s.includes('rose')) return 4;
-  if (s.includes('blue')) return 3;
-  if (s.includes('amber')) return 2;
+  // Merged tables show the most urgent state (`@shared/tableState`).
+  if (s.includes('ring-red-500')) return 7;
+  if (s.includes('violet')) return 6;
+  if (s.includes('rose')) return 5;
+  if (s.includes('amber')) return 4;
+  if (s.includes('emerald')) return 3;
+  if (s.includes('sky') || s.includes('blue')) return 2;
   if (s) return 1;
   return 0;
 }

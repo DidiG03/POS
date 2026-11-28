@@ -46,19 +46,31 @@ export const ConnectionBar = memo(function ConnectionBar({
     window.addEventListener(QUEUE_SYNCING_EVENT, on);
     return () => window.removeEventListener(QUEUE_SYNCING_EVENT, on);
   }, []);
+  // "All sent" shows once the queue has emptied AND the bar knows the till
+  // is back: the queue often replays before the next heartbeat says so.
+  const emptiedWhileDown = useRef(0);
   useEffect(() => {
-    if (prevWaiting.current > 0 && waiting === 0 && !tillDown) {
+    const show = () => {
       const at = Date.now();
       setEmptiedAt(at);
       setNow(at);
-      const timer = window.setTimeout(
-        () => setNow(Date.now()),
-        ALL_SENT_SHOW_MS + 50,
-      );
-      prevWaiting.current = waiting;
-      return () => window.clearTimeout(timer);
+      return window.setTimeout(() => setNow(Date.now()), ALL_SENT_SHOW_MS + 50);
+    };
+    let timer: number | undefined;
+    if (prevWaiting.current > 0 && waiting === 0) {
+      if (tillDown) emptiedWhileDown.current = Date.now();
+      else timer = show();
+    } else if (
+      !tillDown &&
+      waiting === 0 &&
+      emptiedWhileDown.current &&
+      Date.now() - emptiedWhileDown.current < 60_000
+    ) {
+      emptiedWhileDown.current = 0;
+      timer = show();
     }
     prevWaiting.current = waiting;
+    return () => window.clearTimeout(timer);
   }, [waiting, tillDown]);
   useEffect(() => {
     if (!open) return;

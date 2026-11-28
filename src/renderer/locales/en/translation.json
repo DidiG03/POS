@@ -540,7 +540,15 @@
     "clearPinHint": "Clearing the Done cards needs a manager. Enter a manager PIN.",
     "clearPinSubmit": "Clear Done",
     "clearPinWrong": "Wrong manager PIN.",
-    "pairWrongCode": "That pairing code is not right. Check it in Admin → Settings."
+    "pairWrongCode": "That pairing code is not right. Check it in Admin → Settings.",
+    "age": {
+      "warning": "Getting late",
+      "late": "Late"
+    },
+    "flag": {
+      "rush": "Rush",
+      "allergy": "Allergy"
+    }
   },
   "tables": {
     "loading": "Loading tables…",
@@ -570,7 +578,17 @@
     "tableLabel": "Table {{label}}",
     "payTicket": "Pay ticket",
     "menuNeedsOpen": "Open the table first — this one is free.",
-    "menuNoItems": "Nothing to print on this table."
+    "menuNoItems": "Nothing to print on this table.",
+    "state": {
+      "seated": "Seated",
+      "ordered": "Ordered",
+      "served": "Served",
+      "billRequested": "Bill printed",
+      "paid": "Paid: to clear",
+      "idle": "Waiting too long",
+      "free": "Free"
+    },
+    "legend": "Table colours"
   },
   "preferences": {
     "loadFailed": "Could not load preferences, so nothing was saved. Reopen this page and try again.",
@@ -2330,6 +2348,18 @@
     "sendAgain": "Send again",
     "markCorrected": "Correction issued: mark done",
     "done": "Saved.",
+    "failed": "Could not save."
+  },
+  "serviceTiming": {
+    "title": "Timing and colours",
+    "idle": "Flag a table waiting longer than (minutes)",
+    "idleHelp": "Counted from the last order. The table gets a red ring.",
+    "clear": "Show a paid table as \"to clear\" for (minutes)",
+    "amber": "Kitchen ticket turns amber after (minutes)",
+    "red": "Kitchen ticket turns red after (minutes)",
+    "soundNew": "Sound on the kitchen screen for a new ticket",
+    "soundRush": "Stronger sound for a rush ticket",
+    "saved": "Saved. Open screens update within seconds.",
     "failed": "Could not save."
   }
 }

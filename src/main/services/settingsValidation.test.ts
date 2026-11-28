@@ -359,3 +359,40 @@ describe('a refused settings save is a 400, not a 500 (QA v0.2.104 #6)', () => {
     expect(settingsSaveErrorStatus(null)).toBe(500);
   });
 });
+
+describe('service timing settings', () => {
+  it('accepts sensible minutes and refuses the rest', () => {
+    expect(() =>
+      assertSettingsPatch(
+        {
+          preferences: { floor: { idleMinutes: 30, clearMinutes: 10 } },
+        } as any,
+        {},
+      ),
+    ).not.toThrow();
+    expect(() =>
+      assertSettingsPatch(
+        { preferences: { floor: { idleMinutes: 2 } } } as any,
+        {},
+      ),
+    ).toThrow(/idle-table/);
+    expect(() =>
+      assertSettingsPatch(
+        { kds: { ticketAmberMinutes: 8, ticketRedMinutes: 15 } } as any,
+        {},
+      ),
+    ).not.toThrow();
+    expect(() =>
+      assertSettingsPatch(
+        { kds: { ticketAmberMinutes: 10, ticketRedMinutes: 9 } } as any,
+        {},
+      ),
+    ).toThrow(/red after/);
+    // Against what is saved: amber 12 with red still 15 is fine; 20 is not.
+    expect(() =>
+      assertSettingsPatch({ kds: { ticketAmberMinutes: 20 } } as any, {
+        kds: { ticketRedMinutes: 15 },
+      }),
+    ).toThrow(/red after/);
+  });
+});

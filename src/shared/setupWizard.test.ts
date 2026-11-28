@@ -283,3 +283,25 @@ describe('importing the menu CSV', () => {
     expect(made).toEqual(['item:Tea', 'cat:Food', 'item:Soup']);
   });
 });
+
+describe('finish checklist without a country', () => {
+  it('does not call fiskalizimi "not needed" before the country is chosen', () => {
+    const line = setupChecklist({
+      businessName: 'X',
+      address: 'Y',
+      country: '',
+      fiscalEnabled: false,
+      fiscalTested: false,
+      printers: 0,
+      testPrinted: 0,
+      menuItems: 0,
+      staff: 0,
+      admins: 0,
+      pairingCode: false,
+    }).find((l) => l.key === 'fiscal')!;
+    expect(line).toMatchObject({
+      ok: false,
+      detail: expect.stringMatching(/country/),
+    });
+  });
+});

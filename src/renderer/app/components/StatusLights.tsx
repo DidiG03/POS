@@ -120,7 +120,7 @@ export const StatusLights = memo(function StatusLights({
           <span aria-hidden className={LOOK[l.level].cls}>
             {LOOK[l.level].shape}
           </span>
-          <span className="hidden text-[color:var(--pos-fg-muted)] md:inline">
+          <span className="hidden text-[color:var(--pos-fg-muted)] xl:inline">
             {t(`status.short.${l.key}`)}
           </span>
         </button>

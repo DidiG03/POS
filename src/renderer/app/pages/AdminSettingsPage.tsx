@@ -3220,6 +3220,130 @@ function BackupsSettings() {
   );
 }
 
+/**
+ * Timing and colours for service: when a table is flagged as waiting too
+ * long and how long a paid table shows "to clear" (`@shared/tableState`),
+ * when kitchen tickets turn amber and red, and kitchen sounds. Saved for
+ * the venue; open screens pick it up without a restart.
+ */
+function ServiceTimingCard() {
+  const { t } = useTranslation();
+  const setStatus = useStatusToast();
+  const [idle, setIdle] = useState(30);
+  const [clear, setClear] = useState(10);
+  const [amber, setAmber] = useState(8);
+  const [red, setRed] = useState(15);
+  const [soundNew, setSoundNew] = useState(false);
+  const [soundRush, setSoundRush] = useState(false);
+  useEffect(() => {
+    void window.api.settings
+      .get()
+      .then((s: any) => {
+        const f = s?.preferences?.floor || {};
+        setIdle(Number(f.idleMinutes) || 30);
+        setClear(Number(f.clearMinutes) || 10);
+        setAmber(Number(s?.kds?.ticketAmberMinutes) || 8);
+        setRed(Number(s?.kds?.ticketRedMinutes) || 15);
+        setSoundNew(s?.kds?.soundNewTicket === true);
+        setSoundRush(s?.kds?.soundRush === true);
+      })
+      .catch(() => undefined);
+  }, []);
+  const save = async (patch: Record<string, unknown>) => {
+    try {
+      await window.api.settings.update(patch as any);
+      setStatus(t('serviceTiming.saved'));
+    } catch (e: any) {
+      setStatus(e?.message || t('serviceTiming.failed'), 'error');
+    }
+  };
+  const num = (v: string) => Math.round(Number(v));
+  return (
+    <SettingsCard>
+      <div className="space-y-3" data-testid="service-timing">
+        <div className="text-[13px] font-semibold">
+          {t('serviceTiming.title')}
+        </div>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field
+            label={t('serviceTiming.idle')}
+            hint={t('serviceTiming.idleHelp')}
+          >
+            <Input
+              inputMode="numeric"
+              value={String(idle)}
+              onChange={(e) => setIdle(num(e.target.value) || 0)}
+              onBlur={() =>
+                void save({
+                  preferences: {
+                    floor: { idleMinutes: idle, clearMinutes: clear },
+                  },
+                })
+              }
+            />
+          </Field>
+          <Field label={t('serviceTiming.clear')}>
+            <Input
+              inputMode="numeric"
+              value={String(clear)}
+              onChange={(e) => setClear(num(e.target.value) || 0)}
+              onBlur={() =>
+                void save({
+                  preferences: {
+                    floor: { idleMinutes: idle, clearMinutes: clear },
+                  },
+                })
+              }
+            />
+          </Field>
+          <Field label={t('serviceTiming.amber')}>
+            <Input
+              inputMode="numeric"
+              value={String(amber)}
+              onChange={(e) => setAmber(num(e.target.value) || 0)}
+              onBlur={() =>
+                void save({
+                  kds: { ticketAmberMinutes: amber, ticketRedMinutes: red },
+                })
+              }
+            />
+          </Field>
+          <Field label={t('serviceTiming.red')}>
+            <Input
+              inputMode="numeric"
+              value={String(red)}
+              onChange={(e) => setRed(num(e.target.value) || 0)}
+              onBlur={() =>
+                void save({
+                  kds: { ticketAmberMinutes: amber, ticketRedMinutes: red },
+                })
+              }
+            />
+          </Field>
+        </div>
+        <SettingsToggleRow
+          title={t('serviceTiming.soundNew')}
+          checked={soundNew}
+          onChange={(next) => {
+            setSoundNew(next);
+            void save({ kds: { soundNewTicket: next } });
+          }}
+          label={t('serviceTiming.soundNew')}
+        />
+        <SettingsToggleRow
+          title={t('serviceTiming.soundRush')}
+          checked={soundRush}
+          onChange={(next) => {
+            setSoundRush(next);
+            void save({ kds: { soundRush: next } });
+          }}
+          label={t('serviceTiming.soundRush')}
+        />
+      </div>
+    </SettingsCard>
+  );
+}
+
 function KdsSettings() {
   const { t } = useTranslation();
   const setStatus = useStatusToast();
@@ -3320,6 +3444,7 @@ function KdsSettings() {
           </Button>
         }
       />
+      <ServiceTimingCard />
       <div className="space-y-3">
         <SettingsCard>
           <SettingsToggleRow

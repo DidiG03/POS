@@ -2132,10 +2132,20 @@ export type FloorTableSnapshot = {
     voided?: boolean;
   }[];
   note: string | null;
+  /** Last order sent at this sitting (`@shared/tableState`). */
+  lastActionAt?: string | null;
+  /** Bill printed this sitting, latest. */
+  billPrintedAt?: string | null;
+  /** What was sent: none on a kitchen display, cooking, or all done. */
+  kitchen?: 'none' | 'cooking' | 'served';
+  /** Live lines on the bill (the floor poll ships no lines). */
+  hasItems?: boolean;
 };
 
 export type FloorSnapshot = {
   tables: FloorTableSnapshot[];
+  /** Tables paid in the last hour and not seated again: "to clear". */
+  recentlyPaid?: Array<{ area: string; label: string; paidAt: string }>;
 };
 
 export interface ApiTables {

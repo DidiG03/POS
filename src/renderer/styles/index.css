@@ -2407,3 +2407,14 @@ html[data-keyboard='open'] .pos-overlay {
 html[data-keyboard='open'] [data-keyboard-pad] {
   padding-bottom: var(--pos-keyboard-h, 0px);
 }
+
+/* KDS ticket age (`kdsTimerUrgencyCardClass`): the whole card changes, and
+   a word says why, so the age reads without colour. */
+.kds-age-warning {
+  background-color: rgb(120 53 15 / 0.45) !important;
+  border-color: rgb(245 158 11) !important;
+}
+.kds-age-late {
+  background-color: rgb(127 29 29 / 0.55) !important;
+  border-color: rgb(244 63 94) !important;
+}

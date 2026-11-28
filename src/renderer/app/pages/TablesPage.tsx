@@ -1,3 +1,16 @@
+import {
+  DEFAULT_FLOOR_THRESHOLDS,
+  type FloorRowFacts,
+  type FloorThresholds,
+  floorThresholds,
+  formatTableTimer,
+  TABLE_STATE_LOOK,
+  type TableFloorState,
+  tableFloorState,
+  tableIsIdle,
+  tableTimerMinutes,
+} from '@shared/tableState';
+import { TableStateLegend } from '../components/TableStateLegend';
 import { POS_HOST_BACK } from '../../utils/hostBackEvent';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -58,9 +71,6 @@ type TableFloorMenu = {
   x: number;
   y: number;
 };
-
-const RED = 'bg-rose-700';
-const ORANGE = 'bg-amber-700';
 
 function clampMenuPos(x: number, y: number, width = 224, height = 168) {
   const pad = 8;
@@ -270,6 +280,34 @@ export default function TablesPage() {
     Record<string, string>
   >({});
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
+  /** Facts for the table colours and timers (`@shared/tableState`). */
+  const [floorFacts, setFloorFacts] = useState<Record<string, FloorRowFacts>>(
+    {},
+  );
+  const [paidAtByTable, setPaidAtByTable] = useState<Record<string, string>>(
+    {},
+  );
+  const [thresholds, setThresholds] = useState<FloorThresholds>(
+    DEFAULT_FLOOR_THRESHOLDS,
+  );
+  // The venue's limits, read again when settings change (no restart).
+  useEffect(() => {
+    const load = () =>
+      void window.api.settings
+        .get()
+        .then((s: any) => setThresholds(floorThresholds(s)))
+        .catch(() => undefined);
+    load();
+    window.addEventListener('pos:settingsChanged', load);
+    return () => window.removeEventListener('pos:settingsChanged', load);
+  }, []);
+  // Timers count minutes: a tick every 20 s is enough and cheap.
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      if (document.visibilityState !== 'hidden') setNowMs(Date.now());
+    }, 20_000);
+    return () => window.clearInterval(id);
+  }, []);
 
   const applySnapshot = useCallback(
     (
@@ -319,7 +357,16 @@ export default function TablesPage() {
       const metrics: Record<string, { covers: number | null; total: number }> =
         {};
       const opened: Record<string, string> = {};
+      const facts: Record<string, FloorRowFacts> = {};
       for (const row of tables) {
+        facts[`${row.area}:${row.label}`] = {
+          open: true,
+          hasItems: row.hasItems ?? Number(row.total) > 0,
+          kitchen: row.kitchen,
+          openedAt: row.openedAt,
+          lastActionAt: row.lastActionAt ?? row.openedAt,
+          billPrintedAt: row.billPrintedAt ?? null,
+        };
         const k = `${row.area}:${row.label}`;
         if (row.userId) {
           owners[k] = row.userId;
@@ -333,6 +380,12 @@ export default function TablesPage() {
       mergeScoped(setOwnerByTable, owners);
       mergeScoped(setMetricsByTable, metrics);
       mergeScoped(setOpenedAtByTable, opened);
+      mergeScoped(setFloorFacts, facts);
+      const paid: Record<string, string> = {};
+      for (const p of snap?.recentlyPaid || []) {
+        paid[`${p.area}:${p.label}`] = p.paidAt;
+      }
+      mergeScoped(setPaidAtByTable, paid);
     },
     [],
   );
@@ -553,21 +606,47 @@ export default function TablesPage() {
     [currency],
   );
 
+  /** State, timer and idle flag per table label in this area. */
+  const tableStates = useMemo(() => {
+    const out: Record<
+      string,
+      { state: TableFloorState; minutes: number | null; idle: boolean }
+    > = {};
+    for (const label of openLabelsInArea) {
+      const f = floorFacts[`${area}:${label}`] || {
+        open: true,
+        hasItems: true,
+      };
+      out[label] = {
+        state: tableFloorState(f, nowMs, thresholds),
+        minutes: tableTimerMinutes(f, nowMs),
+        idle: tableIsIdle(f, nowMs, thresholds),
+      };
+    }
+    for (const [k, paidAt] of Object.entries(paidAtByTable)) {
+      if (!k.startsWith(`${area}:`)) continue;
+      const label = k.slice(area.length + 1);
+      if (out[label]) continue;
+      const f = { open: false, hasItems: false, paidAt };
+      const state = tableFloorState(f, nowMs, thresholds);
+      if (state === 'paid') {
+        out[label] = {
+          state,
+          minutes: tableTimerMinutes(f, nowMs),
+          idle: false,
+        };
+      }
+    }
+    return out;
+  }, [openLabelsInArea, floorFacts, paidAtByTable, area, nowMs, thresholds]);
+
   const colorByLabel = useMemo(() => {
     const out: Record<string, string> = {};
-    const uid = user?.id;
-    const singleWaiter = Object.keys(userMap).length <= 1;
-    for (const label of openLabelsInArea) {
-      const ownerId = ownerByTable[`${area}:${label}`];
-      if (
-        singleWaiter ||
-        ownerId == null ||
-        (uid != null && Number(ownerId) === Number(uid))
-      ) {
-        out[label] = RED;
-      } else {
-        out[label] = ORANGE;
-      }
+    for (const [label, s] of Object.entries(tableStates)) {
+      // The state's colour; an idle table also gets a red ring.
+      out[label] = `${TABLE_STATE_LOOK[s.state].cls}${
+        s.idle ? ' ring-4 ring-red-500 ring-offset-2' : ''
+      }`;
     }
     return out;
   }, [openLabelsInArea, ownerByTable, area, user?.id, userMap]);
@@ -587,7 +666,22 @@ export default function TablesPage() {
         const ms = iso ? new Date(iso).getTime() : NaN;
         out[label] = Number.isFinite(ms) ? formatElapsed(nowMs - ms) : '…';
       } else {
-        out[label] = initialsByTable[k];
+        // Icon and timer, so the state reads without colour.
+        const s = tableStates[label];
+        out[label] =
+          [
+            s ? TABLE_STATE_LOOK[s.state].icon : '',
+            initialsByTable[k],
+            s ? formatTableTimer(s.minutes) : '',
+          ]
+            .filter(Boolean)
+            .join(' ') || initialsByTable[k];
+      }
+    }
+    for (const [label, s] of Object.entries(tableStates)) {
+      if (s.state === 'paid' && out[label] == null) {
+        out[label] =
+          `${TABLE_STATE_LOOK.paid.icon} ${formatTableTimer(s.minutes)}`;
       }
     }
     return out;
@@ -600,6 +694,7 @@ export default function TablesPage() {
     initialsByTable,
     nowMs,
     formatMoney,
+    tableStates,
   ]);
 
   const openTable = useCallback(
@@ -810,6 +905,7 @@ export default function TablesPage() {
             {t('tables.noAreas')}
           </div>
         ) : null}
+        {user && area ? <TableStateLegend /> : null}
         {user && area ? (
           <FloorCanvas
             key={`${user.id}:${area}`}

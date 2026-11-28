@@ -196,6 +196,35 @@ export function assertSettingsPatch(
     }
   }
 
+  // Service timing (`@shared/tableState`, KDS ticket ages).
+  const minutes = (v: unknown, lo: number, hi: number, what: string) => {
+    const n = Number(v);
+    if (!Number.isInteger(n) || n < lo || n > hi) {
+      refuse(`${what} must be a whole number of minutes from ${lo} to ${hi}.`);
+    }
+  };
+  const floor = input.preferences?.floor;
+  if (floor && typeof floor === 'object') {
+    if (has(floor, 'idleMinutes'))
+      minutes(floor.idleMinutes, 5, 240, 'The idle-table limit');
+    if (has(floor, 'clearMinutes'))
+      minutes(floor.clearMinutes, 1, 60, 'The "to clear" time');
+  }
+  const kdsIn = input.kds;
+  if (kdsIn && typeof kdsIn === 'object') {
+    if (has(kdsIn, 'ticketAmberMinutes'))
+      minutes(kdsIn.ticketAmberMinutes, 1, 120, 'The amber time');
+    if (has(kdsIn, 'ticketRedMinutes'))
+      minutes(kdsIn.ticketRedMinutes, 2, 240, 'The red time');
+    const a = has(kdsIn, 'ticketAmberMinutes')
+      ? Number(kdsIn.ticketAmberMinutes)
+      : Number(current?.kds?.ticketAmberMinutes ?? 8);
+    const r = has(kdsIn, 'ticketRedMinutes')
+      ? Number(kdsIn.ticketRedMinutes)
+      : Number(current?.kds?.ticketRedMinutes ?? 15);
+    if (r <= a) refuse('A ticket must turn red after it turns amber.');
+  }
+
   // Only a change: every preferences save re-sends the saved currency, and
   // one saved before this check must not block the rest of the screen.
   const norm = (c: unknown) =>
