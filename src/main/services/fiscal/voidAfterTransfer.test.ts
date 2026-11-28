@@ -44,7 +44,7 @@ vi.mock('./claims', async (orig) => {
 
 import { flagVoidAfterFiscalization } from './index';
 
-const now = Date.parse('2026-11-27T20:00:00Z');
+const now = Date.now();
 const claim = (key: string, atMs: number) => ({
   idempotencyKey: key,
   record: {
