@@ -592,6 +592,12 @@ async function computeZReportFigures(input: {
 
 const zLock = new KeyedAsyncMutex();
 
+let afterZReport: ((z: ZReport) => void) | null = null;
+/** Run after each Z is issued (the till sets the automatic backup here). */
+export function setAfterZReport(fn: ((z: ZReport) => void) | null): void {
+  afterZReport = fn;
+}
+
 /**
  * Close the period since the last Z: compute, number, store and print it.
  * One at a time, so two presses never make two reports for one period.
@@ -659,6 +665,15 @@ export async function issueZReport(input: {
     const printed = await (input.print ?? printZReport)(report, false).catch(
       () => false,
     );
+    // Closing the day starts the automatic backup, in the background
+    // (`autoBackup.ts`); the Z never waits for it.
+    if (afterZReport) {
+      try {
+        afterZReport(report);
+      } catch {
+        // a backup problem never fails the Z
+      }
+    }
     return { report, printed };
   });
 }

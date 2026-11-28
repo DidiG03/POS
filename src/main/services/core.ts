@@ -283,6 +283,12 @@ export const coreServices = {
     if (input?.privacy)
       merged.privacy = { ...(current.privacy || {}), ...input.privacy };
     if (input?.kds) merged.kds = { ...(current.kds || {}), ...input.kds };
+    // Automatic backups (`autoBackup.ts`): field by field.
+    if ((input as any)?.backups)
+      (merged as any).backups = {
+        ...((current as any).backups || {}),
+        ...(input as any).backups,
+      };
     if (input?.preferences) {
       merged.preferences = {
         ...(current.preferences || {}),

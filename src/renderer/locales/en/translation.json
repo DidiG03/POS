@@ -747,7 +747,20 @@
     "created": "Backup created.",
     "restoreFailed": "Restore failed",
     "restoring": "Restoring…",
-    "restoredDev": "Restored. App will close now (dev mode). Please run \"npm run dev\" again."
+    "restoredDev": "Restored. App will close now (dev mode). Please run \"npm run dev\" again.",
+    "autoTitle": "Automatic backups",
+    "autoHelp": "Off unless switched on. When on: a backup after every Z report and every few hours, checked after it is written, copied to the folder below, and the newest ones kept. Service never waits for it.",
+    "autoOnZ": "Back up after every Z report",
+    "autoEvery": "Also back up every",
+    "hours_one": "{{count}} hour",
+    "hours_other": "{{count}} hours",
+    "autoKeep": "Backups to keep",
+    "autoFolder": "Copy to folder",
+    "autoFolderHelp": "A USB stick or a network or synced folder on the till, as a full path. Leave empty to keep backups on the till only.",
+    "autoSaved": "Backup settings saved.",
+    "autoSaveFailed": "Could not save the backup settings.",
+    "autoLastOk": "Last automatic backup: {{when}} · {{where}}",
+    "autoLastFailed": "Last automatic backup FAILED: {{when}} · {{error}}"
   },
   "settingsVault": {
     "statusTurnedOff": "Disk protection is off on this till. The database is stored unencrypted; the computer's own disk encryption (FileVault / BitLocker) still protects it.",
@@ -1395,8 +1408,8 @@
     "splitCardAmount": "Amount on card",
     "splitCashPart": "Rest in cash: {{amount}}",
     "splitCardInvalid": "Enter a card amount above 0 and below the total.",
-    "cashCapOver": "Cash over {{cap}} ALL ({{max}}) isn't allowed in Albania for one sale. Take card, or split it.",
-    "cashCapOverB2b": "Cash over {{cap}} ALL ({{max}}) isn't allowed in Albania for one sale to a business. Take card, or split it.",
+    "cashCapOver": "Bills over {{cap}} ALL ({{max}}) must be paid fully by card in Albania. To take some cash, split the bill by seat into bills under that.",
+    "cashCapOverB2b": "Bills over {{cap}} ALL ({{max}}) to a business must be paid fully by card in Albania. To take some cash, split the bill by seat into bills under that.",
     "cashCapTakeCard": "Take card",
     "cashCapSplit": "Cash {{max}} + rest on card",
     "cashCapRefused": "Cash limit",
@@ -1407,7 +1420,8 @@
     "tipTotal": "Tip {{tip}} · {{total}} in all (the tip is not part of the sale)",
     "tipInvalid": "Check the tip",
     "payingSlow": "The till is taking longer than usual. Nothing is charged twice: if this does not finish, the payment is sent again under the same code.",
-    "splitBillInfo": "One payment is taken for the whole bill. To take each guest's share separately, pay by seat."
+    "splitBillInfo": "One payment is taken for the whole bill. To take each guest's share separately, pay by seat.",
+    "payTipPart": "(incl. tip {{tip}})"
   },
   "reservations": {
     "timeRequired": "Choose a time for the reservation.",

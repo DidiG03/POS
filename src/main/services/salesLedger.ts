@@ -6,11 +6,11 @@
  */
 
 import { tipOf } from '@shared/tips';
+import { cashTenderOf } from '@shared/cashTender';
 import { prisma } from '@db/client';
 import { coreServices } from './core';
 import { roundMoney } from '@shared/pricing';
 import {
-  cashChangeDue,
   isPaymentPayload,
   ledgerLinesFromPayload,
   orderTypeFromArea,
@@ -166,9 +166,9 @@ export async function writeSettledSale(
   const coversRaw = Number(payload.covers);
   const covers =
     Number.isFinite(coversRaw) && coversRaw > 0 ? Math.floor(coversRaw) : null;
-  // Cash handed over also covers a cash tip: that part is not change.
-  const cashTip = tipOf(meta)?.method === 'CASH' ? tipOf(meta)!.amount : 0;
-  const change = cashChangeDue(meta.amountPaid, figures.total + cashTip);
+  // Change on what the guest owed in cash (its cash part and a cash tip),
+  // from what they handed over (`@shared/cashTender`).
+  const change = cashTenderOf(meta)?.change ?? 0;
   const seatId = String(meta.seatId || lines[0]?.seatId || '').trim() || null;
   const seatLabel = String(meta.seatLabel || '').trim() || null;
   const discountType = String(meta.discountType || '').trim() || null;

@@ -10,8 +10,9 @@
  * same limit so the waiter can take card or split instead.
  *
  * Applies only on tills that file with the Albanian tax service
- * (fiskalizimi on). Card is unlimited; for cash + card only the cash part
- * counts.
+ * (fiskalizimi on). The cap is on the invoice total whenever the invoice
+ * has any cash on it: a bill over it is paid fully by card, or split by
+ * seat into bills each under it. Card only is never capped.
  */
 import { roundMoney } from './money';
 
@@ -27,7 +28,10 @@ export const CASH_CAP_B2B_FROM = '2026-01-30';
 export interface CashLimit {
   /** The cap in lekë. */
   capLek: number;
-  /** The cap in the venue's currency: the most cash this sale may take. */
+  /**
+   * The cap in the venue's currency: the largest bill that may be paid
+   * with any cash at all. Above it the whole bill goes on card.
+   */
   maxCash: number;
   currency: string;
   b2b: boolean;
@@ -141,7 +145,7 @@ const fmt = (n: number) =>
     maximumFractionDigits: 2,
   });
 
-/** The message staff see, with the most cash allowed. */
+/** The message staff see. */
 export function cashLimitMessage(limit: CashLimit): string {
   const cap = `${fmt(limit.capLek)} ALL`;
   const who = limit.b2b ? ' to a business' : '';
@@ -149,7 +153,7 @@ export function cashLimitMessage(limit: CashLimit): string {
     limit.currency === 'ALL'
       ? ''
       : ` (${fmt(limit.maxCash)} ${limit.currency})`;
-  return `Cash over ${cap}${max} isn't allowed in Albania for one sale${who}. Take card, or split it with no more than ${fmt(limit.maxCash)} ${limit.currency} in cash.`;
+  return `Bills over ${cap}${max}${who} must be paid fully by card in Albania. To take some cash, split the bill by seat into bills of no more than ${fmt(limit.maxCash)} ${limit.currency} each.`;
 }
 
 /** Null-safe check of one payment against the cap. */
@@ -163,7 +167,12 @@ export function checkCashLimit(
   const cash = cashPartOf(meta);
   const rate = lekRate(settings) ?? 1;
   const cashLek = roundMoney(cash * rate);
-  if (cashLek <= limit.capLek + 1e-9) return { ok: true, limit };
+  // The cap is on the invoice, not on the cash part: easyPos refuses an
+  // invoice over it that has any cash on it, so a €5,830 bill paid €100
+  // cash + the rest by card was taken, the table closed, and the invoice
+  // refused (busy-service run 2, #1). Card only is never capped.
+  const billLek = roundMoney((Number(meta?.totalAfter) || 0) * rate);
+  if (!(cash > 0) || billLek <= limit.capLek + 1e-9) return { ok: true, limit };
   return {
     ok: false,
     code: CASH_LIMIT_EXCEEDED,

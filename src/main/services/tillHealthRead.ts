@@ -11,9 +11,26 @@ import {
 import { readBackupSavedElsewhere } from './dbBackups';
 import { clockOffsetMs } from './fiscal/clock';
 import { listFiscalClaimsNeedingReview } from './fiscal/claims';
+import { olderClients } from './clientVersions';
+import { APP_VERSION } from '@shared/appVersion';
 import { coreServices } from './core';
 import { notifyAdminsAndActor } from './adminAlerts';
 import { logIgnored } from './logIgnored';
+
+async function readAutoBackupProblem(nowMs: number): Promise<string | null> {
+  const settings: any = await coreServices
+    .readSettings()
+    .catch(logIgnored('tillHealth:settings', null));
+  const { autoBackupConfig, autoBackupWarning, readAutoBackupStatus } =
+    await import('./autoBackup');
+  const config = autoBackupConfig(settings);
+  if (!config.enabled) return null;
+  return autoBackupWarning({
+    config,
+    status: await readAutoBackupStatus(),
+    now: nowMs,
+  });
+}
 
 async function countFiscalReviews(): Promise<number> {
   const settings: any = await coreServices
@@ -44,6 +61,9 @@ export async function readTillHealth(nowMs = Date.now()): Promise<{
       : null,
     clockOffsetMs: clockOffsetMs(nowMs),
     fiscalReviews: await countFiscalReviews(),
+    olderClients: olderClients(nowMs),
+    autoBackupProblem: await readAutoBackupProblem(nowMs),
+    tillVersion: APP_VERSION,
   });
   return { warnings, savedElsewhereAt: saved?.at ?? null, freeBytes };
 }

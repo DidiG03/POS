@@ -156,6 +156,7 @@ import { checkPaymentLines } from './services/paymentLines';
 import { noticeShortPin } from './services/shortPinNotice';
 import { INVALID_SPLIT, normalizePaymentSplit } from '@shared/paymentSplits';
 import { checkCashLimit, preparePaymentAnswer } from '@shared/cashLimit';
+import { noteClientVersion } from './services/clientVersions';
 import {
   paymentReceiptPrints,
   voidTicketWithoutBill,
@@ -168,6 +169,7 @@ import {
   TILL_BUSY_MESSAGE_GENERIC,
 } from '@shared/staffError';
 import { INVALID_TIP, normalizeTip } from '@shared/tips';
+import { withCashTender } from '@shared/cashTender';
 import {
   CASH_COUNT_REQUIRED,
   cashCountAtClockOut,
@@ -1226,6 +1228,15 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
       // learn the minimum.
       {
         const reported = req.headers[APP_VERSION_HEADER.toLowerCase()];
+        // For till health: which app versions are in use (`clientVersions`).
+        noteClientVersion(
+          Array.isArray(reported) ? reported[0] : reported,
+          String(
+            req.headers['x-pos-device'] ||
+              (req.socket as any)?.remoteAddress ||
+              '',
+          ),
+        );
         if (
           pathname !== '/health' &&
           appVersionTooOld(Array.isArray(reported) ? reported[0] : reported)
@@ -2860,6 +2871,10 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
       if (req.method === 'GET' && pathname === '/backups') {
         return send(res, 200, listDbBackups(), corsOrigin);
       }
+      if (req.method === 'GET' && pathname === '/backups/auto-status') {
+        const { readAutoBackupStatus } = await import('./services/autoBackup');
+        return send(res, 200, await readAutoBackupStatus(), corsOrigin);
+      }
       if (req.method === 'POST' && pathname === '/backups/create') {
         return send(res, 200, await createDbBackupNow(), corsOrigin);
       }
@@ -3257,7 +3272,8 @@ export async function startApiServer(httpPort = 3333, httpsPort = 3443) {
                 corsOrigin,
               );
             }
-            payload.meta = tipOk.meta;
+            // Cash handed over and change, for the record and the receipt.
+            payload.meta = withCashTender(tipOk.meta);
             // Albania's cash cap, before anything is taken
             // (`@shared/cashLimit`).
             const cashCap = checkCashLimit(settings, payload.meta);

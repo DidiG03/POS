@@ -129,6 +129,7 @@ export const IPC_POLICIES: Readonly<Record<string, IpcPolicy>> = {
   // -------------------------------------------------------------- backups
   'backups:create': { allow: ADMIN },
   'backups:list': { allow: ADMIN },
+  'backups:autoStatus': { allow: ADMIN },
   'backups:restore': { allow: ADMIN },
 
   // -------------------------------------------------------------- billing

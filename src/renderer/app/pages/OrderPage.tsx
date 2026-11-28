@@ -1,4 +1,5 @@
 import type { CashLimit } from '@shared/cashLimit';
+import { chargeWithTip } from '@shared/tips';
 import type { PaymentApprovalPurpose } from '@shared/approvalPurpose';
 import {
   lazy,
@@ -705,12 +706,16 @@ export default function OrderPage() {
   const [tipInput, setTipInput] = useState('');
   const [tipMode, setTipMode] = useState<'AMOUNT' | 'PERCENT'>('AMOUNT');
   const [tipMethod, setTipMethod] = useState<'CASH' | 'CARD'>('CARD');
+  /** Cash the guest handed over, as typed in "Cash received". */
+  const [cashTendered, setCashTendered] = useState<number | null>(null);
   /** Albania's cash cap for the open payment (`@shared/cashLimit`). */
   const [cashLimit, setCashLimit] = useState<CashLimit | null>(null);
   const [posCurrency, setPosCurrency] = useState<string>('EUR');
   const [eurExchangeRate, setEurExchangeRate] = useState<number | null>(null);
   const [splitGuestCount, setSplitGuestCount] = useState(1);
-  const [amountPaid, setAmountPaid] = useState<string>('');
+  // (The rounded bill once sent as "amount paid"; the till now gets the
+  // cash actually handed over, `cashTendered`.)
+  const [, setAmountPaid] = useState<string>('');
   const [printReceipt, setPrintReceipt] = useState<boolean>(true);
   const [paySeatId, setPaySeatId] = useState<string | null>(null);
   const [printStationTickets, setPrintStationTickets] = useState<boolean>(true);
@@ -1522,6 +1527,7 @@ export default function OrderPage() {
     setTipInput('');
     setTipMode('AMOUNT');
     setTipMethod('CARD');
+    setCashTendered(null);
     setDiscountType('NONE');
     setDiscountValue('');
     setDiscountReason('');
@@ -1848,6 +1854,8 @@ export default function OrderPage() {
     if (!Number.isFinite(n) || n <= 0) return 0;
     return roundMoney(tipMode === 'PERCENT' ? (totalDue * n) / 100 : n);
   })();
+  /** What is charged: the bill plus the tip. */
+  const chargeTotal = chargeWithTip(totalDue, tipAmount);
   const formatAmount = useMemo(() => makeFormatAmount(), []);
   /** Payment screen figures carry the venue currency (€12.50, 1,200 L). */
   const formatMoney = useCallback(
@@ -4189,10 +4197,11 @@ export default function OrderPage() {
             busyAction != null || !connectionOk || payLines.length === 0
           }
           confirmLabel={
-            addMode === 'seat' && payingSeatName
+            // What is charged, tip included; the tip is named apart.
+            (addMode === 'seat' && payingSeatName
               ? t('order.paySeatWithTotal', {
                   label: payingSeatName,
-                  amount: formatMoney(totalDue),
+                  amount: formatMoney(chargeTotal),
                 })
               : split && split.guests > 1
                 ? // Equal split is a guide only: one payment of the full
@@ -4202,10 +4211,15 @@ export default function OrderPage() {
                     shares: splitSharesText(split, formatMoney),
                   })
                 : t('order.payWithTotal', {
-                    amount: formatMoney(totalDue),
-                  })
+                    amount: formatMoney(chargeTotal),
+                  })) +
+            (tipAmount > 0
+              ? ` ${t('order.payTipPart', { tip: formatMoney(tipAmount) })}`
+              : '')
           }
-          confirmEur={eurDue}
+          confirmEur={
+            tipAmount > 0 ? toEurAtRate(chargeTotal, eurQuoteRate) : eurDue
+          }
           cashLimit={cashLimit}
           notice={
             fiscalRefusal ? (
@@ -4268,6 +4282,7 @@ export default function OrderPage() {
             setTipInput('');
           }}
           onTipMethod={setTipMethod}
+          onCashReceived={setCashTendered}
           onSplitCard={setSplitCard}
           onTogglePrint={() => setPrintReceipt((v) => !v)}
           onConfirm={async () => {
@@ -4295,7 +4310,11 @@ export default function OrderPage() {
                   : paymentMethod === 'MIXED' && splitCardAmount != null
                     ? totalDue - splitCardAmount
                     : 0;
-              if (cashLimit && cashPart > cashLimit.maxCash + 0.0001) {
+              if (
+                cashLimit &&
+                cashPart > 0 &&
+                totalDue > cashLimit.maxCash + 0.0001
+              ) {
                 toast.error(
                   t(
                     cashLimit.b2b
@@ -4460,7 +4479,11 @@ export default function OrderPage() {
                           }
                         : {}),
                       paidAt: new Date().toISOString(),
-                      amountPaid: Number(amountPaid),
+                      // What was handed over, as typed; the change is
+                      // worked out on the till (`@shared/cashTender`).
+                      amountPaid:
+                        cashTendered != null ? cashTendered : chargeTotal,
+                      ...(cashTendered != null ? { cashTendered } : {}),
                       // Not part of the sale (`@shared/tips`).
                       ...(tipAmount > 0
                         ? {

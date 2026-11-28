@@ -150,6 +150,14 @@ export interface SettingsDTO {
   devEditionSwitch?: boolean;
   tableAreas?: TableAreaDTO[];
   /** Crash reports to the developer; on unless turned off. */
+  /** Automatic backups (`autoBackup.ts`); off unless `auto` is true. */
+  backups?: {
+    auto?: boolean;
+    onZ?: boolean;
+    everyHours?: number;
+    folder?: string;
+    keep?: number;
+  };
   privacy?: {
     crashReports?: boolean;
     /** Months a reservation guest's name, phone and note are kept (`guestDataRetention.ts`). */
@@ -1055,6 +1063,16 @@ export interface ApiBackups {
   restore(input: {
     name: string;
   }): Promise<{ ok: boolean; error?: string; devRestartRequired?: boolean }>;
+  /** The last automatic backup, or null (`autoBackup.ts`). */
+  autoStatus?(): Promise<{
+    at: string;
+    ok: boolean;
+    reason: string;
+    error?: string;
+    file?: string;
+    copied?: string;
+    lastOkAt?: string;
+  } | null>;
 }
 
 export interface KdsTicketDTO {

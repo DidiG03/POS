@@ -80,6 +80,20 @@ describe('writeSettledSale', () => {
     expect(Number(data.payments.create.change)).toBe(50);
   });
 
+  it('stores the bill as the sale and the cash handed over beside it', async () => {
+    await writeSettledSale(db(), {
+      payload: {
+        ...payload,
+        meta: { ...payload.meta, totalAfter: 1200, cashTendered: 2000 },
+      },
+      idempotencyKey: 'tender-1',
+    });
+    const data = orderCreate.mock.calls[0][0].data;
+    expect(Number(data.total)).toBe(1200);
+    expect(Number(data.payments.create.amount)).toBe(1200);
+    expect(Number(data.payments.create.change)).toBe(800);
+  });
+
   it('ignores kitchen slips', async () => {
     const r = await writeSettledSale(db(), {
       payload: { ...payload, meta: { kind: 'ORDER' } },

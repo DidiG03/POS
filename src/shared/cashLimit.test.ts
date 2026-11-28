@@ -58,7 +58,7 @@ describe('Albania cash cap', () => {
     expect(checkCashLimit(euro, cash(5102.05), after).ok).toBe(false);
   });
 
-  it('checks only the cash part of cash + card, and never card', () => {
+  it('caps the bill, not the cash part, whenever any cash is on it', () => {
     const mixed = (cashPart: number, card: number) => ({
       kind: 'PAYMENT',
       method: 'MIXED',
@@ -68,8 +68,11 @@ describe('Albania cash cap', () => {
         { method: 'CARD', amount: card },
       ],
     });
-    expect(checkCashLimit(euro, mixed(5000, 830), after).ok).toBe(true);
-    expect(checkCashLimit(euro, mixed(5200, 630), after).ok).toBe(false);
+    // €5,830 (571,340 ALL) with €100 cash: easyPos refuses the invoice.
+    const r = checkCashLimit(euro, mixed(100, 5730), after);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toMatch(/must be paid fully by card/);
+    expect(checkCashLimit(euro, mixed(0.01, 5829.99), after).ok).toBe(false);
     // Before the split is made exact: total less the card part.
     expect(
       checkCashLimit(
@@ -77,13 +80,80 @@ describe('Albania cash cap', () => {
         {
           method: 'MIXED',
           totalAfter: 5830,
-          splits: [{ method: 'CARD', amount: 830 }],
+          splits: [{ method: 'CARD', amount: 5729 }],
+        },
+        after,
+      ).ok,
+    ).toBe(false);
+    // Card only is never capped.
+    expect(
+      checkCashLimit(euro, { method: 'CARD', totalAfter: 5830 }, after).ok,
+    ).toBe(true);
+    // At or under the cap, any mix of cash and card is fine.
+    expect(checkCashLimit(euro, mixed(5000, 102.04), after).ok).toBe(true);
+    expect(checkCashLimit(lek, mixed(250_000, 250_000), after).ok).toBe(true);
+    expect(checkCashLimit(lek, mixed(1, 500_000), after).ok).toBe(false);
+  });
+
+  it('the bill split into two bills under the cap takes cash on each', () => {
+    // €5,830 split by seat into €2,915 + €2,915, each 285,670 ALL.
+    for (const half of [2915, 2915]) {
+      expect(checkCashLimit(euro, cash(half), after).ok).toBe(true);
+      expect(
+        checkCashLimit(
+          euro,
+          {
+            method: 'MIXED',
+            totalAfter: half,
+            splits: [
+              { method: 'CASH', amount: 100 },
+              { method: 'CARD', amount: half - 100 },
+            ],
+          },
+          after,
+        ).ok,
+      ).toBe(true);
+    }
+  });
+
+  it('a bill to a business over 100,000 ALL takes no cash at all', () => {
+    const b2b = { buyerNipt: 'L12345678A' };
+    expect(
+      checkCashLimit(
+        lek,
+        {
+          method: 'MIXED',
+          totalAfter: 100_001,
+          splits: [
+            { method: 'CASH', amount: 1 },
+            { method: 'CARD', amount: 100_000 },
+          ],
+          ...b2b,
+        },
+        after,
+      ).ok,
+    ).toBe(false);
+    expect(
+      checkCashLimit(
+        lek,
+        {
+          method: 'MIXED',
+          totalAfter: 100_000,
+          splits: [
+            { method: 'CASH', amount: 50_000 },
+            { method: 'CARD', amount: 50_000 },
+          ],
+          ...b2b,
         },
         after,
       ).ok,
     ).toBe(true);
     expect(
-      checkCashLimit(euro, { method: 'CARD', totalAfter: 5830 }, after).ok,
+      checkCashLimit(
+        lek,
+        { method: 'CARD', totalAfter: 900_000, ...b2b },
+        after,
+      ).ok,
     ).toBe(true);
   });
 

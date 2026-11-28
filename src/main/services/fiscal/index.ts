@@ -1,3 +1,4 @@
+import type { FiscalClaimRecord } from './claims';
 import {
   isDatabaseError,
   staffSafeMessage,
@@ -42,6 +43,7 @@ import {
   commitDeferredFiscalClaim,
   commitRegisteredFiscalClaim,
   findRegisteredClaimForTable,
+  listFiscalClaimsForTableSince,
   findUnsentClaimForTable,
   flagFiscalCorrectionRequired,
   notifyFiscalReviewNeeded,
@@ -889,6 +891,47 @@ const CLOSED_TABLE_LOOKBACK_MS = 12 * 60 * 60 * 1000;
  * path flag is the safety net when a ticket is voided without going through
  * that panel.
  */
+/**
+ * The newest filed invoice at this table since `since` whose payment did
+ * not close the table, i.e. one that can belong to the bill still open.
+ */
+export async function findOpenBillInvoice(input: {
+  area: string;
+  tableLabel: string;
+  since: Date;
+}): Promise<{ idempotencyKey: string; record: FiscalClaimRecord } | null> {
+  const rows = (await listFiscalClaimsForTableSince(input))
+    .filter((r) => r.record.state === 'REGISTERED')
+    .sort((a, b) => (a.record.updatedAt < b.record.updatedAt ? 1 : -1));
+  for (const row of rows) {
+    const saleKey = String(row.record.context?.saleKey || row.idempotencyKey);
+    if (await paymentClosedItsTable(saleKey)) continue;
+    return row;
+  }
+  return null;
+}
+
+/** True when the payment under this key closed its table (a whole bill). */
+async function paymentClosedItsTable(saleKey: string): Promise<boolean> {
+  try {
+    const { prisma } = await import('@db/client');
+    const job: any = await (prisma as any).printJob.findUnique({
+      where: { idempotencyKey: saleKey },
+    });
+    const meta = job?.payloadJson?.meta;
+    if (meta) return meta.closeTable !== false;
+    // No receipt stored: a saved sale for the key closed its table.
+    const order: any = await (prisma as any).order.findFirst({
+      where: { idempotencyKey: saleKey },
+      select: { id: true },
+    });
+    return Boolean(order);
+  } catch {
+    // Not known: treat it as this bill's, as before.
+    return false;
+  }
+}
+
 export async function flagVoidAfterFiscalization(input: {
   area: string;
   tableLabel: string;
@@ -908,9 +951,12 @@ export async function flagVoidAfterFiscalization(input: {
      * lookback: with no ticket in progress, the last invoice filed for
      * this table is the one being undone.
      */
+    const sessionStart = await getTableSessionStartedAt(
+      input.area,
+      input.tableLabel,
+    );
     const since =
-      (await getTableSessionStartedAt(input.area, input.tableLabel)) ??
-      new Date(Date.now() - CLOSED_TABLE_LOOKBACK_MS);
+      sessionStart ?? new Date(Date.now() - CLOSED_TABLE_LOOKBACK_MS);
     const unsent = await findUnsentClaimForTable({
       area: input.area,
       tableLabel: input.tableLabel,
@@ -964,11 +1010,22 @@ export async function flagVoidAfterFiscalization(input: {
         });
       }
     }
-    const found = await findRegisteredClaimForTable({
-      area: input.area,
-      tableLabel: input.tableLabel,
-      since,
-    });
+    // With a bill open, only an invoice of this bill counts: a seat paid
+    // part-way. An invoice whose payment closed the table settled an
+    // earlier bill. A sitting moved here keeps its own start time, which
+    // can be before this table's last sale: voiding a line on it used to
+    // flag that earlier, settled sale (busy-service run 2, #4).
+    const found = sessionStart
+      ? await findOpenBillInvoice({
+          area: input.area,
+          tableLabel: input.tableLabel,
+          since,
+        })
+      : await findRegisteredClaimForTable({
+          area: input.area,
+          tableLabel: input.tableLabel,
+          since,
+        });
     if (!found) return false;
     return await flagFiscalCorrectionRequired({
       idempotencyKey: found.idempotencyKey,

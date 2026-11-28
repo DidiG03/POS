@@ -168,6 +168,7 @@ const api: Api = {
   },
   backups: {
     list: () => ipcRenderer.invoke('backups:list'),
+    autoStatus: () => ipcRenderer.invoke('backups:autoStatus'),
     create: () => ipcRenderer.invoke('backups:create'),
     restore: (input: { name: string }) =>
       ipcRenderer.invoke('backups:restore', input),

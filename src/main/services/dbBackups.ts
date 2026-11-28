@@ -32,7 +32,7 @@ export async function getSqliteDbFilePath(): Promise<string | null> {
   }
 }
 
-function getBackupsDir(): string {
+export function getBackupsDir(): string {
   return join(app.getPath('userData'), 'backups');
 }
 
@@ -44,17 +44,19 @@ function ensureDir(p: string) {
   }
 }
 
-function backupFileName(now = new Date()) {
+function backupFileName(now = new Date(), prefix = 'pos-backup') {
   const y = now.getFullYear();
   const m = String(now.getMonth() + 1).padStart(2, '0');
   const d = String(now.getDate()).padStart(2, '0');
   const hh = String(now.getHours()).padStart(2, '0');
   const mm = String(now.getMinutes()).padStart(2, '0');
   const ss = String(now.getSeconds()).padStart(2, '0');
-  return `pos-backup-${y}${m}${d}-${hh}${mm}${ss}.db`;
+  return `${prefix}-${y}${m}${d}-${hh}${mm}${ss}.db`;
 }
 
-export async function createDbBackupNow(): Promise<{
+export async function createDbBackupNow(
+  opts: { prefix?: string } = {},
+): Promise<{
   ok: boolean;
   file?: string;
   error?: string;
@@ -63,7 +65,7 @@ export async function createDbBackupNow(): Promise<{
   if (!dbPath) return { ok: false, error: 'Could not locate database file' };
   const dir = getBackupsDir();
   ensureDir(dir);
-  const dest = join(dir, backupFileName());
+  const dest = join(dir, backupFileName(new Date(), opts.prefix));
 
   try {
     try {
@@ -227,8 +229,9 @@ export async function readBackupSavedElsewhere(): Promise<{
  * then read the copy back and check it, as for any backup.
  *
  * Backups are otherwise kept on the same disk as the ledger: a dead disk
- * took both. This is still started by a person — there is no automatic
- * backup — and only on the till itself.
+ * took both. Started by a person here (File → Save Backup To…), or by
+ * the automatic backups when an admin has switched them on
+ * (`autoBackup.ts`).
  */
 export async function saveBackupTo(
   folder: string,
@@ -242,9 +245,20 @@ export async function saveBackupTo(
 }> {
   const made = await (deps.makeBackup ?? createDbBackupNow)();
   if (!made.ok || !made.file) return made;
-  const dest = join(folder, made.file.split(/[\\/]/).pop() as string);
+  return copyBackupTo(made.file, folder);
+}
+
+/**
+ * Copy a checked backup into `folder`, push it to the device, read it back
+ * and check it, and record it as saved off this computer.
+ */
+export async function copyBackupTo(
+  file: string,
+  folder: string,
+): Promise<{ ok: boolean; file?: string; error?: string }> {
+  const dest = join(folder, file.split(/[\\/]/).pop() as string);
   try {
-    fs.copyFileSync(made.file, dest);
+    fs.copyFileSync(file, dest);
     // Pushed to the device: a USB stick pulled out early keeps nothing.
     const fd = fs.openSync(dest, 'r+');
     try {

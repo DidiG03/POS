@@ -171,6 +171,7 @@ export const LAN_ROUTE_POLICIES: Readonly<Record<string, LanRoutePolicy>> = {
 
   'GET /network/ips': { allow: ADMIN },
   'GET /backups': { allow: ADMIN },
+  'GET /backups/auto-status': { allow: ADMIN },
   'POST /backups/create': { allow: ADMIN },
   'POST /backups/restore': { allow: ADMIN, tillOnly: true },
   'GET /vault/prefs': { allow: ADMIN },

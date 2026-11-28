@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { normalizePaymentSplit } from './paymentSplits';
-import { normalizeTip, sumTips, tipOf } from './tips';
+import { chargeWithTip, normalizeTip, sumTips, tipOf } from './tips';
 import { checkCashLimit } from './cashLimit';
 
 const pay = (extra: Record<string, unknown>) => ({
@@ -86,5 +86,14 @@ describe('tips', () => {
       Math.round(rows.reduce((a, r) => a + r.amount, 0) * 100) / 100;
     expect(sum(t.byMethod)).toBe(6.6);
     expect(sum(t.byWaiter)).toBe(6.6);
+  });
+});
+
+describe('the Pay button amount', () => {
+  it('is the bill plus the tip', () => {
+    expect(chargeWithTip(40, 4.5)).toBe(44.5);
+    expect(chargeWithTip(19.99, 2.01)).toBe(22);
+    expect(chargeWithTip(40, 0)).toBe(40);
+    expect(chargeWithTip(40, -3)).toBe(40);
   });
 });

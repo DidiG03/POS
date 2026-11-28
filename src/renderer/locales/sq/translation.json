@@ -747,7 +747,20 @@
     "created": "Kopja u krijua.",
     "restoreFailed": "Rikthimi dështoi",
     "restoring": "Duke rikthyer…",
-    "restoredDev": "U rikthye. Aplikacioni do të mbyllet tani (dev). Ekzekuto sërish \"npm run dev\"."
+    "restoredDev": "U rikthye. Aplikacioni do të mbyllet tani (dev). Ekzekuto sërish \"npm run dev\".",
+    "autoTitle": "Kopje rezervë automatike",
+    "autoHelp": "Joaktive derisa ta aktivizoni. Kur është aktive: një kopje pas çdo raporti Z dhe çdo disa orë, e kontrolluar pasi shkruhet, e kopjuar në dosjen më poshtë, dhe ruhen më të rejat. Shërbimi nuk e pret.",
+    "autoOnZ": "Kopje pas çdo raporti Z",
+    "autoEvery": "Gjithashtu kopje çdo",
+    "hours_one": "{{count}} orë",
+    "hours_other": "{{count}} orë",
+    "autoKeep": "Kopje që ruhen",
+    "autoFolder": "Kopjo në dosje",
+    "autoFolderHelp": "Një USB ose një dosje rrjeti/e sinkronizuar në arkë, me shteg të plotë. Lëreni bosh për t'i mbajtur kopjet vetëm në arkë.",
+    "autoSaved": "Cilësimet e kopjeve u ruajtën.",
+    "autoSaveFailed": "Cilësimet e kopjeve nuk u ruajtën.",
+    "autoLastOk": "Kopja e fundit automatike: {{when}} · {{where}}",
+    "autoLastFailed": "Kopja e fundit automatike DËSHTOI: {{when}} · {{error}}"
   },
   "settingsVault": {
     "statusTurnedOff": "Mbrojtja e diskut është e fikur në këtë arkë. Baza e të dhënave ruhet pa enkriptim; enkriptimi i diskut të kompjuterit (FileVault / BitLocker) vazhdon ta mbrojë.",
@@ -1395,8 +1408,8 @@
     "splitCardAmount": "Shuma me kartë",
     "splitCashPart": "Pjesa tjetër në para: {{amount}}",
     "splitCardInvalid": "Shkruani një shumë me kartë mbi 0 dhe nën totalin.",
-    "cashCapOver": "Në Shqipëri nuk lejohen më shumë se {{cap}} ALL ({{max}}) në para në dorë për një shitje. Merrni me kartë ose ndajeni.",
-    "cashCapOverB2b": "Në Shqipëri nuk lejohen më shumë se {{cap}} ALL ({{max}}) në para në dorë për një shitje me biznes. Merrni me kartë ose ndajeni.",
+    "cashCapOver": "Në Shqipëri faturat mbi {{cap}} ALL ({{max}}) paguhen plotësisht me kartë. Për të marrë pjesë në para, ndajeni faturën sipas vendeve në fatura nën këtë shumë.",
+    "cashCapOverB2b": "Në Shqipëri faturat mbi {{cap}} ALL ({{max}}) për një biznes paguhen plotësisht me kartë. Për të marrë pjesë në para, ndajeni faturën sipas vendeve në fatura nën këtë shumë.",
     "cashCapTakeCard": "Me kartë",
     "cashCapSplit": "Para {{max}} + pjesa tjetër me kartë",
     "cashCapRefused": "Kufiri i parave në dorë",
@@ -1407,7 +1420,8 @@
     "tipTotal": "Bakshish {{tip}} · {{total}} gjithsej (bakshishi nuk është pjesë e shitjes)",
     "tipInvalid": "Kontrolloni bakshishin",
     "payingSlow": "Arka po vonon më shumë se zakonisht. Asgjë nuk paguhet dy herë: nëse nuk përfundon, pagesa dërgohet përsëri me të njëjtin kod.",
-    "splitBillInfo": "Merret një pagesë për gjithë faturën. Për ta marrë pjesën e secilit veç, paguani sipas vendit."
+    "splitBillInfo": "Merret një pagesë për gjithë faturën. Për ta marrë pjesën e secilit veç, paguani sipas vendit.",
+    "payTipPart": "(me bakshish {{tip}})"
   },
   "reservations": {
     "timeRequired": "Zgjidhni orën e rezervimit.",

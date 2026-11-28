@@ -3,6 +3,16 @@ import { describe, expect, it, vi } from 'vitest';
 vi.mock('@db/client', () => ({
   prisma: {
     order: {
+      findMany: async ({ where }: any) => {
+        const at = new Date('2026-11-20T20:00:00.500Z').getTime();
+        const { gte, lte } = where.closedAt;
+        return where.area === 'Main' &&
+          where.tableLabel === 'T3' &&
+          gte.getTime() <= at &&
+          lte.getTime() >= at
+          ? [{ id: 7, total: 3 }]
+          : [];
+      },
       findUnique: async ({ where }: any) =>
         where.id === 7
           ? {
@@ -16,6 +26,14 @@ vi.mock('@db/client', () => ({
                 },
               ],
             }
+          : null,
+    },
+    // The old-shape lookups: a real payment holds NIVF-REAL; one sale was
+    // closed at T3 at 20:00:00.500 for 3.00.
+    payment: {
+      findFirst: async ({ where }: any) =>
+        where.fiscalNivf === 'NIVF-REAL' || where.fiscalNslf === 'NSLF-REAL'
+          ? { orderId: 7 }
           : null,
     },
     printJob: {
@@ -40,6 +58,7 @@ vi.mock('./paymentSettle', () => ({
 
 import {
   REPRINT_NOT_FOUND,
+  REPRINT_UPDATE_APP,
   resolveDeviceReprint,
   stripClientFiscalMeta,
 } from './receiptReprint';
@@ -53,8 +72,59 @@ const forged = {
 
 describe('resolveDeviceReprint', () => {
   it('refuses a reprint that names no recorded sale', async () => {
-    const r = await resolveDeviceReprint({ meta: forged });
+    const r = await resolveDeviceReprint({
+      meta: { ...forged, reprintOf: 999 },
+    });
     expect(r).toMatchObject({ kind: 'refuse', code: REPRINT_NOT_FOUND });
+  });
+
+  describe('a Waiter app older than 0.2.114 (no reprintOf)', () => {
+    it('reprints by the invoice code it sends, from the stored receipt', async () => {
+      const r = await resolveDeviceReprint({
+        area: 'X',
+        tableLabel: 'Y',
+        meta: { kind: 'PAYMENT', reprint: true, fiscalNivf: 'NIVF-REAL' },
+      });
+      expect(r.kind).toBe('print');
+      if (r.kind === 'print') {
+        expect(r.payload.tableLabel).toBe('T3');
+        expect(r.payload.meta.fiscalNivf).toBe('NIVF-REAL');
+      }
+    });
+
+    it('reprints a sale without codes by its table, paid time and total', async () => {
+      const r = await resolveDeviceReprint({
+        area: 'Main',
+        tableLabel: 'T3',
+        meta: {
+          kind: 'PAYMENT',
+          reprint: true,
+          paidAt: '2026-11-20T20:00:01.000Z',
+          totalAfter: 3,
+        },
+      });
+      expect(r.kind).toBe('print');
+    });
+
+    it('a forged or unknown one gets "update the Waiter app", never a silent failure', async () => {
+      const r = await resolveDeviceReprint({ meta: forged });
+      expect(r).toMatchObject({ kind: 'refuse', code: REPRINT_UPDATE_APP });
+      if (r.kind === 'refuse') expect(r.error).toMatch(/Update the Waiter app/);
+      const wrongTotal = await resolveDeviceReprint({
+        area: 'Main',
+        tableLabel: 'T3',
+        meta: {
+          kind: 'PAYMENT',
+          reprint: true,
+          paidAt: '2026-11-20T20:00:01.000Z',
+          totalAfter: 300,
+        },
+      });
+      expect(wrongTotal).toMatchObject({
+        kind: 'refuse',
+        code: REPRINT_UPDATE_APP,
+      });
+    });
   });
 
   it("prints the till's own receipt of the sale, not what was sent", async () => {

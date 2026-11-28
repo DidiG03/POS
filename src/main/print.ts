@@ -1190,6 +1190,10 @@ export function buildEscposTicket(
         lines.push(...twoCol(row.label, formatMoneyEscpos(row.amount), layout));
       }
     }
+    // Cash handed over and change (`@shared/cashTender`).
+    for (const row of correction ? [] : receiptCashRows(meta, lang)) {
+      lines.push(...twoCol(row.label, formatMoneyEscpos(row.amount), layout));
+    }
     if (approvedBy) lines.push(escposText(`${copy.approved}: ${approvedBy}\n`));
 
     const fiscalNivf = String(meta?.fiscalNivf || '').trim();
@@ -1444,7 +1448,12 @@ export function buildHtmlReceipt(
                   )
                   .join('')
               : '';
-          })()}${fiscalBlock}`
+          })()}${receiptCashRows(meta, lang)
+            .map(
+              (r) =>
+                `<div class="small">${safe(r.label)}: ${safe(formatMoneyEscpos(r.amount))}</div>`,
+            )
+            .join('')}${fiscalBlock}`
         : '';
 
   const subtitleParts: string[] = [];
@@ -2102,5 +2111,20 @@ export function receiptTipRows(
       label: sq ? 'Paguar me bakshish' : 'Paid incl. tip',
       amount: roundMoney(Number(saleTotal || 0) + tip.amount),
     },
+  ];
+}
+
+/** "Cash received" and "Change" lines of a payment receipt, when known. */
+export function receiptCashRows(
+  meta: any,
+  lang: string,
+): Array<{ label: string; amount: number }> {
+  const tendered = Number(meta?.cashTendered);
+  const change = Number(meta?.cashChange);
+  if (!(tendered > 0) || !Number.isFinite(change)) return [];
+  const sq = lang === 'sq';
+  return [
+    { label: sq ? 'Para të marra' : 'Cash received', amount: tendered },
+    { label: sq ? 'Kusuri' : 'Change', amount: change },
   ];
 }

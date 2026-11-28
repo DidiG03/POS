@@ -9,7 +9,7 @@
  */
 import fs from 'node:fs';
 
-export type TillHealthKind = 'disk' | 'backup' | 'clock' | 'fiscal';
+export type TillHealthKind = 'disk' | 'backup' | 'clock' | 'fiscal' | 'version';
 export interface TillHealthWarning {
   kind: TillHealthKind;
   level: 'warn' | 'danger';
@@ -39,6 +39,12 @@ export function tillHealthWarnings(input: {
   clockOffsetMs: number | null;
   /** Invoices on the fiscal review list (refused or unconfirmed). */
   fiscalReviews?: number;
+  /** Devices seen today on an app older than this till (`clientVersions`). */
+  olderClients?: Array<{ version: string; devices: number }>;
+  /** This till's version. */
+  tillVersion?: string;
+  /** From `autoBackup.autoBackupWarning`, when automatic backups are on. */
+  autoBackupProblem?: string | null;
 }): TillHealthWarning[] {
   const out: TillHealthWarning[] = [];
   if (input.freeBytes != null && input.freeBytes < DISK_WARN_BYTES) {
@@ -86,6 +92,26 @@ export function tillHealthWarnings(input: {
       message: `The till's clock is ${minutes} minutes ${
         input.clockOffsetMs > 0 ? 'fast' : 'slow'
       }. Receipts and reports use it: set the time on that computer.`,
+    });
+  }
+  if (input.autoBackupProblem) {
+    out.push({
+      kind: 'backup',
+      level: 'danger',
+      message: input.autoBackupProblem,
+    });
+  }
+  const older = input.olderClients || [];
+  const olderDevices = older.reduce((a, o) => a + o.devices, 0);
+  if (olderDevices > 0) {
+    out.push({
+      kind: 'version',
+      level: 'warn',
+      message: `${olderDevices} ${
+        olderDevices === 1 ? 'phone or tablet uses' : 'phones or tablets use'
+      } an app older than this till${
+        input.tillVersion ? ` (${input.tillVersion})` : ''
+      }: ${older.map((o) => `${o.version} (${o.devices})`).join(', ')}. Update them: some features, such as reprinting receipts, need the same version.`,
     });
   }
   const reviews = Number(input.fiscalReviews || 0);

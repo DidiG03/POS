@@ -105,6 +105,73 @@ export async function storedReceiptForSale(
   return { ok: true, payload, meta };
 }
 
+export const REPRINT_UPDATE_APP = 'REPRINT_UPDATE_APP';
+
+/** Seconds either side of the old request's paid time. */
+const OLD_REPRINT_TIME_SLACK_MS = 2_000;
+
+/**
+ * The sale an old-shape reprint (no `reprintOf`) is about, or null.
+ *
+ * Matched on what the till recorded, never trusted from the request:
+ *   - its invoice codes, when it sent a NIVF/NSLF that a payment holds;
+ *   - else the table, the paid time (within 2 s) and the total (to the
+ *     cent), when exactly one sale fits.
+ * A forged code finds nothing; a request that does match a real sale
+ * prints that sale's own stored receipt, which is what a reprint is.
+ */
+export async function findSaleForOldReprint(request: {
+  area?: unknown;
+  tableLabel?: unknown;
+  meta?: unknown;
+}): Promise<number | null> {
+  const meta = (request.meta || {}) as Record<string, unknown>;
+  const nivf = text(meta.fiscalNivf);
+  const nslf = text(meta.fiscalNslf);
+  if (nivf || nslf) {
+    const pay: any = await prisma.payment
+      .findFirst({
+        where: nivf ? { fiscalNivf: nivf } : { fiscalNslf: nslf },
+        select: { orderId: true },
+        orderBy: { id: 'desc' },
+      } as any)
+      .catch(() => null);
+    return pay?.orderId ? Number(pay.orderId) : null;
+  }
+  const area = text(request.area);
+  const tableLabel = text(request.tableLabel);
+  const paidAt = Date.parse(text(meta.paidAt));
+  const total = Number(meta.totalAfter ?? meta.total);
+  if (
+    !area ||
+    !tableLabel ||
+    !Number.isFinite(paidAt) ||
+    !Number.isFinite(total)
+  ) {
+    return null;
+  }
+  const rows: any[] = await prisma.order
+    .findMany({
+      where: {
+        area,
+        tableLabel,
+        closedAt: {
+          gte: new Date(paidAt - OLD_REPRINT_TIME_SLACK_MS),
+          lte: new Date(paidAt + OLD_REPRINT_TIME_SLACK_MS),
+        },
+      },
+      select: { id: true, total: true },
+      take: 5,
+    } as any)
+    .catch(() => []);
+  const fits = rows.filter(
+    (o) =>
+      Math.abs(Math.round(Number(o.total) * 100) - Math.round(total * 100)) <=
+      1,
+  );
+  return fits.length === 1 ? Number(fits[0].id) : null;
+}
+
 export type DeviceReprint =
   | { kind: 'not-reprint' }
   | { kind: 'print'; payload: Record<string, any> }
@@ -117,17 +184,36 @@ export type DeviceReprint =
 export async function resolveDeviceReprint(request: {
   meta?: unknown;
   userName?: unknown;
+  /** Read only to find the sale of an old-shape request. */
+  area?: unknown;
+  tableLabel?: unknown;
 }): Promise<DeviceReprint> {
   if (!isPaymentReprint(request.meta)) return { kind: 'not-reprint' };
-  const orderId = Number((request.meta as any)?.reprintOf);
-  const stored = await storedReceiptForSale(orderId);
+  const named = Number((request.meta as any)?.reprintOf);
+  // A Waiter app older than 0.2.114 does not name the sale; find it from
+  // what the old request carries (`findSaleForOldReprint`). Either way the
+  // till prints its own stored copy, never the request's lines or codes.
+  const oldClient = !(Number.isInteger(named) && named > 0);
+  const orderId = oldClient
+    ? await findSaleForOldReprint(request).catch(() => null)
+    : named;
+  const stored = orderId
+    ? await storedReceiptForSale(orderId)
+    : ({ ok: false, error: 'not-found' } as const);
   if (!stored.ok) {
-    return {
-      kind: 'refuse',
-      code: REPRINT_NOT_FOUND,
-      error:
-        'The till has no receipt for this sale, so nothing was printed. Refresh Reports and try again.',
-    };
+    return oldClient
+      ? {
+          kind: 'refuse',
+          code: REPRINT_UPDATE_APP,
+          error:
+            "Nothing was printed: this phone's Waiter app is too old to reprint this receipt. Update the Waiter app, or reprint it from the till.",
+        }
+      : {
+          kind: 'refuse',
+          code: REPRINT_NOT_FOUND,
+          error:
+            'The till has no receipt for this sale, so nothing was printed. Refresh Reports and try again.',
+        };
   }
   return {
     kind: 'print',

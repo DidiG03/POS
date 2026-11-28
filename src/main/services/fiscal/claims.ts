@@ -957,6 +957,63 @@ export async function parkUnconfirmedClaimUnlocked(
   return true;
 }
 
+/**
+ * Hold a queued invoice for a person (`holdReason`), as a refusal is held
+ * today. For claims queued by older versions that read a refusal as an
+ * outage and kept resending it (`reviewBackfill.ts`). Caller holds the lock.
+ */
+export async function holdDeferredClaimForReviewUnlocked(
+  idempotencyKey: string,
+  holdReason: string,
+): Promise<boolean> {
+  const existing = await readFiscalClaim(idempotencyKey);
+  if (!existing || existing.state !== 'DEFERRED' || existing.holdReason) {
+    return false;
+  }
+  await writeClaim(idempotencyKey, {
+    ...existing,
+    holdReason,
+    holdKind: 'rejected',
+    updatedAt: nowIso(),
+  });
+  return true;
+}
+
+/**
+ * A review entry for a sale that has no invoice and no record of one: a
+ * person checks easyPos for the docId. Never overwrites an existing claim.
+ */
+export async function createReviewFiscalClaim(
+  idempotencyKey: string,
+  input: {
+    context: FiscalClaimRecord['context'];
+    reason: string;
+    createdAt?: string;
+  },
+): Promise<boolean> {
+  const at = nowIso();
+  try {
+    await prisma.syncState.create({
+      data: {
+        key: fiscalClaimKey(idempotencyKey),
+        valueJson: {
+          state: 'UNKNOWN',
+          attemptId: newAttemptId(),
+          attempts: 0,
+          createdAt: input.createdAt || at,
+          updatedAt: at,
+          context: input.context,
+          lastError: input.reason,
+        } satisfies FiscalClaimRecord as any,
+      },
+    });
+    return true;
+  } catch (e: any) {
+    if (e?.code === 'P2002') return false;
+    throw e;
+  }
+}
+
 /** Record extra context on a claim without changing its state. */
 export async function annotateFiscalClaimUnlocked(
   idempotencyKey: string,

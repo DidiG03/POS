@@ -1675,6 +1675,9 @@ export function installBrowserLanApi(): void {
         const rows = await goLan('/backups');
         return Array.isArray(rows) ? rows : [];
       },
+      async autoStatus() {
+        return await goLan('/backups/auto-status');
+      },
       async create() {
         return await goLan('/backups/create', {
           method: 'POST',

@@ -175,6 +175,27 @@ export function assertSettingsPatch(
 ): FiscalEnvironment | undefined {
   if (!input || typeof input !== 'object') return undefined;
 
+  // Automatic backups: a folder that is not there is refused at save, not
+  // found out by a failed backup at closing (`autoBackup.ts`).
+  if (input.backups != null) {
+    const b = input.backups;
+    if (typeof b !== 'object') refuse('Backup settings must be an object.');
+    if (has(b, 'everyHours')) {
+      const n = Number(b.everyHours);
+      if (!Number.isInteger(n) || n < 1 || n > 24)
+        refuse('Back up every 1 to 24 hours.');
+    }
+    if (has(b, 'keep')) {
+      const n = Number(b.keep);
+      if (!Number.isInteger(n) || n < 1 || n > 365)
+        refuse('Keep between 1 and 365 automatic backups.');
+    }
+    if (has(b, 'folder') && String(b.folder || '').trim()) {
+      const problem = backupFolderProblemSync(String(b.folder).trim());
+      if (problem) refuse(problem, 'BACKUP_FOLDER_INVALID');
+    }
+  }
+
   // Only a change: every preferences save re-sends the saved currency, and
   // one saved before this check must not block the rest of the screen.
   const norm = (c: unknown) =>
@@ -330,4 +351,19 @@ export function assertSettingsPatch(
   }
   // Matches the address (checked above): recorded for later saves.
   return newToken ? urlEnv : (tokenEnv ?? fiscalNow.tokenEnvironment);
+}
+
+/** Same check as `autoBackup.backupFolderProblem`, without its imports. */
+function backupFolderProblemSync(folder: string): string | null {
+  const fs = require('node:fs') as typeof import('node:fs');
+  const { isAbsolute } = require('node:path') as typeof import('node:path');
+  if (!isAbsolute(folder)) return `"${folder}" is not a full folder path.`;
+  try {
+    if (!fs.statSync(folder).isDirectory())
+      return `"${folder}" is not a folder.`;
+    fs.accessSync(folder, fs.constants.W_OK);
+  } catch {
+    return `The backup folder "${folder}" cannot be reached or written to.`;
+  }
+  return null;
 }

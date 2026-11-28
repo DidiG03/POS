@@ -97,6 +97,7 @@ export function PaymentCheckout({
   onTipInput,
   onTipMode,
   onTipMethod,
+  onCashReceived,
 }: {
   open: boolean;
   busy: boolean;
@@ -161,6 +162,8 @@ export function PaymentCheckout({
   onTipInput?: (next: string) => void;
   onTipMode?: (next: 'AMOUNT' | 'PERCENT') => void;
   onTipMethod?: (next: 'CASH' | 'CARD') => void;
+  /** Cash typed in "Cash received", in the till's currency, or null. */
+  onCashReceived?: (amount: number | null) => void;
 }) {
   const { t } = useTranslation();
   // Cash and card: the cash part is what the card does not cover.
@@ -178,8 +181,9 @@ export function PaymentCheckout({
       : paymentMethod === 'MIXED'
         ? (splitCash ?? 0)
         : 0;
+  // The cap is on the bill whenever any cash is on it (`@shared/cashLimit`).
   const overCashCap =
-    !!cashLimit && cashPart > cashLimit.maxCash + 0.0001 && totalDue > 0;
+    !!cashLimit && cashPart > 0 && totalDue > cashLimit.maxCash + 0.0001;
   const [itemsOpen, setItemsOpen] = useState(false);
   const [discountOpen, setDiscountOpen] = useState(false);
 
@@ -391,25 +395,6 @@ export function PaymentCheckout({
                   >
                     {t('order.cashCapTakeCard')}
                   </button>
-                  {onSplitCard ? (
-                    <button
-                      type="button"
-                      className="pos-btn"
-                      onClick={() => {
-                        onPaymentMethod('MIXED');
-                        onSplitCard(
-                          (
-                            Math.ceil((totalDue - cashLimit.maxCash) * 100) /
-                            100
-                          ).toFixed(2),
-                        );
-                      }}
-                    >
-                      {t('order.cashCapSplit', {
-                        max: formatAmount(cashLimit.maxCash),
-                      })}
-                    </button>
-                  ) : null}
                 </div>
               </div>
             ) : null}
@@ -567,6 +552,7 @@ export function PaymentCheckout({
           (paymentMethod === 'MIXED' && splitCash != null) ? (
             <CashChangeCalculator
               key={open ? 'open' : 'closed'}
+              onReceived={onCashReceived}
               totalDue={
                 Math.round(
                   ((paymentMethod === 'MIXED' ? splitCash! : totalDue) +
@@ -759,11 +745,14 @@ function CashChangeCalculator({
   posCurrency,
   eurExchangeRate,
   formatAmount,
+  onReceived,
 }: {
   totalDue: number;
   posCurrency: string;
   eurExchangeRate: number | null;
   formatAmount: (n: number) => string;
+  /** The cash typed, in the till's currency, or null (`@shared/cashTender`). */
+  onReceived?: (amount: number | null) => void;
 }) {
   const { t } = useTranslation();
   const [raw, setRaw] = useState('');
@@ -781,6 +770,15 @@ function CashChangeCalculator({
   const receivedInTill =
     typed == null ? null : payInEur ? typed * rate! : typed;
   const result = cashChange(totalDue, receivedInTill);
+  useEffect(() => {
+    onReceived?.(
+      receivedInTill == null || !Number.isFinite(receivedInTill)
+        ? null
+        : Math.round(receivedInTill * 100) / 100,
+    );
+  }, [receivedInTill, onReceived]);
+  // Unmounted (method changed to card): nothing was handed over.
+  useEffect(() => () => onReceived?.(null), [onReceived]);
   const dueInInput = payInEur ? totalDue / rate! : totalDue;
   const quick = quickCashAmounts(
     dueInInput,

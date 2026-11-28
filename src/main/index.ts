@@ -55,6 +55,7 @@ import { crashReportsAllowed } from '@shared/crashReportScrub';
 import { INVALID_SPLIT, normalizePaymentSplit } from '@shared/paymentSplits';
 import { checkCashLimit, preparePaymentAnswer } from '@shared/cashLimit';
 import { INVALID_TIP, normalizeTip } from '@shared/tips';
+import { withCashTender } from '@shared/cashTender';
 import {
   isDatabaseError,
   staffSafeMessage,
@@ -1585,6 +1586,31 @@ async function startHostDatabaseAndServicesOp(): Promise<void> {
     // Fiskalizimi retries read the settings as they are at each attempt.
     setFiscalSettingsSource(() => coreServices.readSettings() as any);
     startFiscalDeferLoop();
+    // Automatic backups, when an admin has switched them on: after each Z
+    // and every few hours (`autoBackup.ts`).
+    void Promise.all([
+      import('./services/autoBackup'),
+      import('./services/zReport'),
+    ]).then(([m, z]) => {
+      m.startAutoBackupSchedule();
+      z.setAfterZReport(() => {
+        void m
+          .runAutoBackup('z')
+          .catch((e) => console.warn('[backup] after Z failed:', e));
+      });
+    });
+    // Once per till: older sales without an invoice that never reached the
+    // review list (`reviewBackfill.ts`). In the background; sends nothing.
+    setTimeout(() => {
+      void (async () => {
+        const settings: any = await coreServices.readSettings();
+        if (settings?.fiscal?.enabled !== true) return;
+        const { backfillFiscalReviews } = await import(
+          './services/fiscal/reviewBackfill'
+        );
+        await backfillFiscalReviews();
+      })().catch((e) => console.warn('[fiscal] review backfill failed:', e));
+    }, 30_000).unref?.();
     // Notifications: automatically delete notifications older than 1 week (DB retention).
     startNotificationRetentionLoop(prisma, { days: 7 });
     startSecurityEventRetention();
@@ -2891,7 +2917,11 @@ const ticketsPrintHandler = async (
   // A reprint prints the till's stored receipt of the sale it names; tax
   // codes in any other request are dropped (`receiptReprint.ts`).
   {
-    const reprint = await resolveDeviceReprint({ meta: (input as any)?.meta });
+    const reprint = await resolveDeviceReprint({
+      meta: (input as any)?.meta,
+      area: (input as any)?.area,
+      tableLabel: (input as any)?.tableLabel,
+    });
     if (reprint.kind === 'refuse') {
       return {
         ok: false,
@@ -3111,7 +3141,8 @@ const ticketsPrintHandler = async (
           permanent: true,
         } as any;
       }
-      payload = { ...payload, meta: tipOk.meta };
+      // Cash handed over and change, for the record and the receipt.
+      payload = { ...payload, meta: withCashTender(tipOk.meta) };
       // Albania's cash cap, before anything is taken (`@shared/cashLimit`).
       const cashCap = checkCashLimit(settings, payload.meta);
       if (!cashCap.ok) return cashCap as any;
@@ -3869,6 +3900,12 @@ ipcHandle('reservations:delete', async (_e, input, ctx) => {
 // Backups: create/list/restore (local SQLite)
 ipcHandle('backups:list', async () => {
   return listDbBackups();
+});
+
+// Last automatic backup (`autoBackup.ts`), for Settings › Backups.
+ipcHandle('backups:autoStatus', async () => {
+  const { readAutoBackupStatus } = await import('./services/autoBackup');
+  return await readAutoBackupStatus();
 });
 
 ipcHandle('backups:create', async () => {

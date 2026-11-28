@@ -175,3 +175,13 @@ export function sumTips(
       .sort((a, b) => b.amount - a.amount),
   };
 }
+
+/**
+ * What the guest is charged: the bill plus the tip. The Pay button showed
+ * the bill alone, so a waiter charged the card without the tip.
+ */
+export function chargeWithTip(bill: number, tip: number): number {
+  const b = Number(bill) || 0;
+  const t = Number(tip) > 0 ? Number(tip) : 0;
+  return roundMoney(b + t);
+}

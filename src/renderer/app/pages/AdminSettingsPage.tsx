@@ -2931,6 +2931,143 @@ function DiskProtectionSettings() {
   );
 }
 
+/** Automatic backups (`autoBackup.ts`): off unless switched on here. */
+function AutoBackupCard() {
+  const { t } = useTranslation();
+  const setStatus = useStatusToast();
+  const [auto, setAuto] = useState(false);
+  const [onZ, setOnZ] = useState(true);
+  const [everyHours, setEveryHours] = useState(6);
+  const [keep, setKeep] = useState(30);
+  const [folder, setFolder] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [last, setLast] = useState<any>(null);
+
+  async function load() {
+    try {
+      const s: any = await window.api.settings.get();
+      const b = s?.backups || {};
+      setAuto(b.auto === true);
+      setOnZ(b.onZ !== false);
+      setEveryHours(Number(b.everyHours) || 6);
+      setKeep(Number(b.keep) || 30);
+      setFolder(String(b.folder || ''));
+    } catch {
+      // keep defaults
+    }
+    try {
+      setLast(await (window.api as any).backups.autoStatus?.());
+    } catch {
+      setLast(null);
+    }
+  }
+  useEffect(() => {
+    void load();
+  }, []);
+
+  async function save(patch: Record<string, unknown>) {
+    setSaving(true);
+    try {
+      await window.api.settings.update({ backups: patch } as any);
+      setStatus(t('settingsBackups.autoSaved'));
+      await load();
+    } catch (e: any) {
+      setStatus(e?.message || t('settingsBackups.autoSaveFailed'), 'error');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <SettingsCard>
+      <div className="space-y-3">
+        <SettingsToggleRow
+          title={t('settingsBackups.autoTitle')}
+          description={t('settingsBackups.autoHelp')}
+          checked={auto}
+          onChange={(next) => void save({ auto: next })}
+          label={t('settingsBackups.autoTitle')}
+        />
+        {auto ? (
+          <>
+            <SettingsToggleRow
+              title={t('settingsBackups.autoOnZ')}
+              checked={onZ}
+              onChange={(next) => void save({ onZ: next })}
+              label={t('settingsBackups.autoOnZ')}
+            />
+            <Field label={t('settingsBackups.autoEvery')}>
+              <Select
+                value={String(everyHours)}
+                disabled={saving}
+                onChange={(e) =>
+                  void save({ everyHours: Number(e.target.value) })
+                }
+              >
+                {[1, 2, 3, 4, 6, 8, 12, 24].map((h) => (
+                  <option key={h} value={h}>
+                    {t('settingsBackups.hours', { count: h })}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            <Field label={t('settingsBackups.autoKeep')}>
+              <Select
+                value={String(keep)}
+                disabled={saving}
+                onChange={(e) => void save({ keep: Number(e.target.value) })}
+              >
+                {[7, 14, 30, 60, 90].map((n) => (
+                  <option key={n} value={n}>
+                    {n}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            <Field
+              label={t('settingsBackups.autoFolder')}
+              hint={t('settingsBackups.autoFolderHelp')}
+            >
+              <div className="flex gap-2">
+                <Input
+                  value={folder}
+                  placeholder={String.raw`E:\OneTap backups`}
+                  onChange={(e) => setFolder(e.target.value)}
+                />
+                <Button
+                  variant="secondary"
+                  disabled={saving}
+                  onClick={() => void save({ folder: folder.trim() })}
+                >
+                  {t('common.save')}
+                </Button>
+              </div>
+            </Field>
+          </>
+        ) : null}
+        {last ? (
+          <div
+            className={cn(
+              'text-[12px]',
+              last.ok ? 'text-gray-400' : 'text-red-300',
+            )}
+          >
+            {last.ok
+              ? t('settingsBackups.autoLastOk', {
+                  when: new Date(last.at).toLocaleString(),
+                  where: last.copied || last.file || '',
+                })
+              : t('settingsBackups.autoLastFailed', {
+                  when: new Date(last.at).toLocaleString(),
+                  error: last.error || '',
+                })}
+          </div>
+        ) : null}
+      </div>
+    </SettingsCard>
+  );
+}
+
 function BackupsSettings() {
   const { t } = useTranslation();
   const [loading, setLoading] = useState(true);
@@ -3031,6 +3168,8 @@ function BackupsSettings() {
           />
         }
       />
+
+      <AutoBackupCard />
 
       {loading ? (
         <SettingsStatus>{t('common.loading')}</SettingsStatus>
